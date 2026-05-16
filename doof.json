@@ -1,0 +1,27 @@
+{
+  "name": "std/http-server",
+  "version": "0.1.0",
+  "license": "ISC",
+  "build": {
+    "native": {
+      "extraCopyPaths": [
+        "native_http_server.hpp",
+        "native_http_server_test_support.hpp"
+      ]
+    }
+  },
+  "dependencies": {
+    "std/blob": {
+      "path": "../blob"
+    },
+    "std/event": {
+      "path": "../event"
+    },
+    "std/http": {
+      "path": "../http"
+    },
+    "std/json": {
+      "path": "../json"
+    }
+  }
+}
