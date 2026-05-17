@@ -45,6 +45,10 @@ function main(): int {
 - A native connection object owns socket lifetime independently of any one
   request handler. HTTP/1.1 connections stay open by default and can serve
   sequential requests; `Connection: close` closes after the current response.
+- `ServerOptions.idleTimeoutMillis` defaults to 30 seconds for otherwise-idle
+  keep-alive connections. Set it to `0` to disable idle expiry.
+- `ServerOptions.maxRequestsPerConnection` defaults to `0` (unbounded). Set a
+  positive value to close a connection after that many completed requests.
 - The internal reactor has an explicit platform seam; the first backend is a
   macOS `kqueue` implementation.
 - The first implementation does not yet support streaming request or response

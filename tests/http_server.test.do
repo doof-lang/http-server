@@ -28,6 +28,10 @@ class KeepAliveState {
   secondPath: string = ""
 }
 
+class SingleResponseState {
+  count: int = 0
+}
+
 function handleDispatch(
   state: DispatchState,
   requestChannel: AsyncEventChannel<Request>,
@@ -74,6 +78,16 @@ function handleKeepAlive(
 
   state.secondPath = request.path
   try! request.respond(Response.text(200, "second\n"))
+  try! requestChannel.close()
+}
+
+function handleSingleResponse(
+  state: SingleResponseState,
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  state.count += 1
+  try! request.respond(Response.text(200, "ok\n"))
   try! requestChannel.close()
 }
 
@@ -192,4 +206,66 @@ export function testHttp11ConnectionCanServeSequentialRequests(): void {
   Assert.isTrue(response.contains("Connection: close"))
   Assert.isTrue(response.contains("first\n"))
   Assert.isTrue(response.contains("second\n"))
+}
+
+export function testIdleKeepAliveConnectionExpires(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0, idleTimeoutMillis: 20 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 1)
+  Assert.isTrue(response.contains("HTTP/1.1 200 OK"))
+  Assert.isTrue(response.contains("Connection: keep-alive"))
+}
+
+export function testConnectionRequestLimitClosesAfterConfiguredCount(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+    capacity: 2,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0, maxRequestsPerConnection: 1 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET /first HTTP/1.1\r\nHost: example.test\r\n\r\nGET /second HTTP/1.1\r\nHost: example.test\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 1)
+  Assert.equal(response.split("HTTP/1.1 200 OK").length, 2)
+  Assert.isTrue(response.contains("Connection: close"))
 }

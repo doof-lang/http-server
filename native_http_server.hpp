@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <climits>
 #include <csignal>
 #include <cstdint>
@@ -368,6 +369,7 @@ public:
     virtual int fd() const = 0;
     virtual void onReadable() = 0;
     virtual void onWritable() = 0;
+    virtual void onTimer() {}
 };
 
 class Reactor {
@@ -530,7 +532,9 @@ private:
     void run() {
         std::vector<struct kevent> events(64);
         while (true) {
-            const int count = ::kevent(kqueueFd_, nullptr, 0, events.data(), static_cast<int>(events.size()), nullptr);
+            timespec timeout {};
+            timeout.tv_nsec = 100 * 1000 * 1000;
+            const int count = ::kevent(kqueueFd_, nullptr, 0, events.data(), static_cast<int>(events.size()), &timeout);
             if (count < 0) {
                 if (errno == EINTR) {
                     continue;
@@ -560,6 +564,17 @@ private:
                 }
                 if (event.filter == EVFILT_WRITE) {
                     handler->onWritable();
+                }
+            }
+
+            std::vector<std::shared_ptr<ReactorHandler>> handlers;
+            handlers.reserve(handlers_.size());
+            for (const auto& entry : handlers_) {
+                handlers.push_back(entry.second);
+            }
+            for (const auto& handler : handlers) {
+                if (handlers_.find(handler->fd()) != handlers_.end()) {
+                    handler->onTimer();
                 }
             }
 
@@ -637,13 +652,18 @@ public:
     NativeConnection(
         int fd,
         int64_t maxBodyBytes,
+        int32_t idleTimeoutMillis,
+        int32_t maxRequestsPerConnection,
         std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
         std::shared_ptr<detail::Reactor> reactor
     )
         : fd_(fd),
           maxBodyBytes_(maxBodyBytes),
+          idleTimeoutMillis_(idleTimeoutMillis),
+          maxRequestsPerConnection_(maxRequestsPerConnection),
           onRequest_(std::move(onRequest)),
-          reactor_(std::move(reactor)) {}
+          reactor_(std::move(reactor)),
+          lastActivityAt_(std::chrono::steady_clock::now()) {}
 
     ~NativeConnection() {
         closeFromServer();
@@ -697,6 +717,7 @@ public:
             if (readCount > 0) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 readBuffer_.append(buffer.data(), static_cast<size_t>(readCount));
+                lastActivityAt_ = std::chrono::steady_clock::now();
                 continue;
             }
             if (readCount == 0) {
@@ -761,6 +782,7 @@ public:
             shouldClose = closeAfterWrite_;
             if (!shouldClose) {
                 awaitingResponse_ = false;
+                lastActivityAt_ = std::chrono::steady_clock::now();
             }
         }
 
@@ -775,6 +797,23 @@ public:
 
     void closeFromServer() {
         closeCommon(false);
+    }
+
+    void onTimer() override {
+        bool shouldClose = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || idleTimeoutMillis_ == 0 || awaitingResponse_ || !writeBuffer_.empty()) {
+                return;
+            }
+            const auto idleFor = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - lastActivityAt_
+            );
+            shouldClose = idleFor.count() >= idleTimeoutMillis_;
+        }
+        if (shouldClose) {
+            closeFromReactor();
+        }
     }
 
 private:
@@ -801,6 +840,11 @@ private:
             attempt = detail::parseRequest(readBuffer_, maxBodyBytes_);
             if (attempt.status == detail::ParseStatus::Complete) {
                 awaitingResponse_ = true;
+                ++requestsServed_;
+                if (maxRequestsPerConnection_ > 0 &&
+                    requestsServed_ >= maxRequestsPerConnection_) {
+                    attempt.request.keepAlive = false;
+                }
             }
         }
 
@@ -869,11 +913,15 @@ private:
     bool awaitingResponse_ = false;
     bool closeAfterWrite_ = false;
     int64_t maxBodyBytes_;
+    int32_t idleTimeoutMillis_;
+    int32_t maxRequestsPerConnection_;
+    int32_t requestsServed_ = 0;
     std::string readBuffer_;
     std::vector<uint8_t> writeBuffer_;
     size_t writeOffset_ = 0;
     std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
     std::shared_ptr<detail::Reactor> reactor_;
+    std::chrono::steady_clock::time_point lastActivityAt_;
 };
 
 inline doof::Result<void, std::string> NativeResponder::respond(
@@ -913,6 +961,8 @@ public:
         const std::string& host,
         int32_t port,
         int64_t maxBodyBytes,
+        int32_t idleTimeoutMillis,
+        int32_t maxRequestsPerConnection,
         std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest
     ) {
         detail::ignoreSigpipe();
@@ -924,6 +974,12 @@ public:
         }
         if (maxBodyBytes < 0) {
             return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|maxBodyBytes must not be negative");
+        }
+        if (idleTimeoutMillis < 0) {
+            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|idleTimeoutMillis must not be negative");
+        }
+        if (maxRequestsPerConnection < 0) {
+            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|maxRequestsPerConnection must not be negative");
         }
 
         addrinfo hints {};
@@ -987,6 +1043,8 @@ public:
                 host,
                 ntohs(bound.sin_port),
                 maxBodyBytes,
+                idleTimeoutMillis,
+                maxRequestsPerConnection,
                 std::move(onRequest),
                 listenFd,
                 reactorResult.value()
@@ -1057,6 +1115,8 @@ private:
         std::string host,
         int32_t port,
         int64_t maxBodyBytes,
+        int32_t idleTimeoutMillis,
+        int32_t maxRequestsPerConnection,
         std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
         int listenFd,
         std::shared_ptr<detail::Reactor> reactor
@@ -1064,6 +1124,8 @@ private:
         : host_(std::move(host)),
           port_(port),
           maxBodyBytes_(maxBodyBytes),
+          idleTimeoutMillis_(idleTimeoutMillis),
+          maxRequestsPerConnection_(maxRequestsPerConnection),
           onRequest_(std::move(onRequest)),
           listenFd_(listenFd),
           reactor_(std::move(reactor)) {}
@@ -1102,6 +1164,8 @@ private:
                     connection = std::make_shared<NativeConnection>(
                         clientFd,
                         maxBodyBytes_,
+                        idleTimeoutMillis_,
+                        maxRequestsPerConnection_,
                         onRequest_,
                         reactor_
                     );
@@ -1161,6 +1225,8 @@ private:
     std::string host_;
     int32_t port_;
     int64_t maxBodyBytes_;
+    int32_t idleTimeoutMillis_;
+    int32_t maxRequestsPerConnection_;
     std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
 
     mutable std::mutex mutex_;
