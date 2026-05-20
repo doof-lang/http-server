@@ -108,6 +108,76 @@ inline std::string toLower(std::string value) {
     return value;
 }
 
+inline bool isTokenChar(unsigned char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return true;
+    }
+    if (ch >= 'A' && ch <= 'Z') {
+        return true;
+    }
+    if (ch >= 'a' && ch <= 'z') {
+        return true;
+    }
+    switch (ch) {
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        case '\'':
+        case '*':
+        case '+':
+        case '-':
+        case '.':
+        case '^':
+        case '_':
+        case '`':
+        case '|':
+        case '~':
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool isHeaderName(std::string_view name) {
+    if (name.empty()) {
+        return false;
+    }
+    for (unsigned char ch : name) {
+        if (!isTokenChar(ch)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool isMethod(std::string_view method) {
+    return isHeaderName(method);
+}
+
+inline bool isVisibleRequestTarget(std::string_view target) {
+    if (target.empty()) {
+        return false;
+    }
+    for (unsigned char ch : target) {
+        if (ch <= 0x20 || ch == 0x7f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool isHeaderValue(std::string_view value) {
+    for (unsigned char ch : value) {
+        if (ch == '\t' || (ch >= 0x20 && ch != 0x7f)) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 inline bool parseContentLength(const std::string& text, int64_t& out) {
     if (text.empty()) {
         return false;
@@ -229,6 +299,7 @@ struct ParseAttempt {
 
 inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     constexpr size_t maxHeaderBytes = 64 * 1024;
+    constexpr size_t maxHeaderCount = 100;
     const size_t headerEnd = buffered.find("\r\n\r\n");
     if (headerEnd == std::string::npos) {
         if (buffered.size() > maxHeaderBytes) {
@@ -239,6 +310,13 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
             };
         }
         return ParseAttempt {};
+    }
+    if (headerEnd + 4 > maxHeaderBytes) {
+        return ParseAttempt {
+            ParseStatus::Error,
+            ParsedRequest {},
+            "headers-too-large|HTTP request headers exceed 65536 bytes",
+        };
     }
 
     const std::string headerBlock = buffered.substr(0, headerEnd);
@@ -256,14 +334,26 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     if (!(requestLineStream >> parsed.method >> parsed.target >> parsed.version)) {
         return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid request line" };
     }
-    if (parsed.version.rfind("HTTP/", 0) != 0) {
+    std::string unexpected;
+    if (requestLineStream >> unexpected) {
+        return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid request line" };
+    }
+    if (!isMethod(parsed.method)) {
+        return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid request method" };
+    }
+    if (!isVisibleRequestTarget(parsed.target)) {
+        return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid request target" };
+    }
+    if (parsed.version != "HTTP/1.0" && parsed.version != "HTTP/1.1") {
         return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid HTTP version" };
     }
 
     int64_t contentLength = 0;
     bool sawContentLength = false;
+    bool sawHost = false;
     bool connectionClose = false;
     bool connectionKeepAlive = false;
+    size_t headerCount = 0;
     std::string line;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -280,6 +370,13 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
 
         const std::string name = line.substr(0, separator);
         const std::string value = trim(line.substr(separator + 1));
+        ++headerCount;
+        if (headerCount > maxHeaderCount) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "headers-too-large|HTTP request has too many headers" };
+        }
+        if (!isHeaderName(name) || !isHeaderValue(value)) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid header line" };
+        }
         const std::string lowerName = toLower(name);
 
         if (lowerName == "content-length") {
@@ -294,12 +391,22 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
         if (lowerName == "transfer-encoding" && toLower(value) != "identity") {
             return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "unsupported-transfer-encoding|chunked transfer encoding is not supported yet" };
         }
+        if (lowerName == "host") {
+            if (sawHost || value.empty()) {
+                return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid Host header" };
+            }
+            sawHost = true;
+        }
         if (lowerName == "connection") {
             connectionClose = connectionClose || headerValueHasToken(value, "close");
             connectionKeepAlive = connectionKeepAlive || headerValueHasToken(value, "keep-alive");
         }
 
         parsed.headersText += name + ": " + value + "\r\n";
+    }
+
+    if (parsed.version == "HTTP/1.1" && !sawHost) {
+        return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|missing Host header" };
     }
 
     if (contentLength < 0 || contentLength > maxBodyBytes) {

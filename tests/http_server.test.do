@@ -91,6 +91,36 @@ function handleSingleResponse(
   try! requestChannel.close()
 }
 
+function assertRequestRejectedBeforeDispatch(requestText: string, statusLine: string): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    requestText,
+  )
+
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 0)
+  Assert.isTrue(response.contains(statusLine))
+  Assert.isTrue(response.contains("Connection: close"))
+}
+
 export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
   state := DispatchState()
   let requestChannel: AsyncEventChannel<Request> | null = null
@@ -268,4 +298,32 @@ export function testConnectionRequestLimitClosesAfterConfiguredCount(): void {
   Assert.equal(state.count, 1)
   Assert.equal(response.split("HTTP/1.1 200 OK").length, 2)
   Assert.isTrue(response.contains("Connection: close"))
+}
+
+export function testHttp11RequestRequiresHostHeader(): void {
+  assertRequestRejectedBeforeDispatch(
+    "GET / HTTP/1.1\r\nConnection: close\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
+}
+
+export function testMalformedRequestLineIsRejected(): void {
+  assertRequestRejectedBeforeDispatch(
+    "GET / HTTP/1.1 extra\r\nHost: example.test\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
+}
+
+export function testInvalidHeaderNameIsRejected(): void {
+  assertRequestRejectedBeforeDispatch(
+    "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length : 5\r\n\r\nhello",
+    "HTTP/1.1 400 Bad Request",
+  )
+}
+
+export function testUnsupportedHttpVersionIsRejected(): void {
+  assertRequestRejectedBeforeDispatch(
+    "GET / HTTP/1.2\r\nHost: example.test\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
 }
