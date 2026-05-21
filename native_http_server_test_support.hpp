@@ -1,6 +1,7 @@
 #pragma once
 
 #include "doof_runtime.hpp"
+#include "native_http_server_protocol.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -19,6 +20,31 @@
 #include <vector>
 
 namespace doof_http_server_test {
+
+class NativeHttpRequestParserFuzz {
+public:
+    static std::string parse(const std::string& requestText, int64_t maxBodyBytes) {
+        std::string buffered = requestText;
+        auto attempt = doof_http_server::detail::parseRequest(buffered, maxBodyBytes);
+        if (attempt.status == doof_http_server::detail::ParseStatus::NeedMore) {
+            return "need-more";
+        }
+        if (attempt.status == doof_http_server::detail::ParseStatus::Error) {
+            return "error|" + attempt.error;
+        }
+
+        const auto& request = attempt.request;
+        const size_t bodySize = request.body ? request.body->size() : 0;
+        return "complete|" +
+            request.method + "|" +
+            request.target + "|" +
+            request.version + "|" +
+            (request.keepAlive ? "keep-alive" : "close") + "|" +
+            std::to_string(bodySize) + "|" +
+            std::to_string(buffered.size()) + "|" +
+            request.headersText;
+    }
+};
 
 class NativeHttpTestRequest {
 public:

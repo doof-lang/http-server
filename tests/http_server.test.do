@@ -14,6 +14,10 @@ import class NativeHttpSlowTestRequest from "../native_http_server_test_support.
   wait(): string
 }
 
+import class NativeHttpRequestParserFuzz from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpRequestParserFuzz {
+  static parse(requestText: string, maxBodyBytes: long): string
+}
+
 class DispatchState {
   method: string = ""
   target: string = ""
@@ -35,6 +39,12 @@ class KeepAliveState {
 
 class SingleResponseState {
   count: int = 0
+}
+
+class ParserCase {
+  name: string = ""
+  requestText: string = ""
+  expectedPrefix: string = ""
 }
 
 function handleDispatch(
@@ -133,6 +143,16 @@ function assertRequestRejectedBeforeDispatch(requestText: string, statusLine: st
   Assert.equal(state.count, 0)
   Assert.isTrue(response.contains(statusLine))
   Assert.isTrue(response.contains("Connection: close"))
+}
+
+function assertParserCases(cases: ParserCase[]): void {
+  for entry of cases {
+    actual := NativeHttpRequestParserFuzz.parse(entry.requestText, 8L)
+    Assert.isTrue(
+      actual.startsWith(entry.expectedPrefix),
+      "${entry.name}: expected ${entry.expectedPrefix}, got ${actual}",
+    )
+  }
 }
 
 export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
@@ -428,4 +448,140 @@ export function testUnsupportedHttpVersionIsRejected(): void {
     "GET / HTTP/1.2\r\nHost: example.test\r\n\r\n",
     "HTTP/1.1 400 Bad Request",
   )
+}
+
+export function testParserFuzzCorpusForLengthTransferAndWhitespaceCombinations(): void {
+  assertParserCases([
+    ParserCase {
+      name: "trimmed content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length:\t5 \r\n\r\nhelloGET /next HTTP/1.1\r\nHost: example.test\r\n\r\n",
+      expectedPrefix: "complete|POST|/|HTTP/1.1|keep-alive|5|42|",
+    },
+    ParserCase {
+      name: "content length too small leaves pipelined bytes",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\n\r\nhello",
+      expectedPrefix: "complete|POST|/|HTTP/1.1|keep-alive|4|1|",
+    },
+    ParserCase {
+      name: "content length too large waits for body",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 6\r\n\r\nhello",
+      expectedPrefix: "need-more",
+    },
+    ParserCase {
+      name: "body size limit",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 9\r\n\r\nhello",
+      expectedPrefix: "error|body-too-large|",
+    },
+    ParserCase {
+      name: "duplicate content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "signed content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: +5\r\n\r\nhello",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "overflow content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 9223372036854775808\r\n\r\nhello",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "chunked transfer encoding",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+      expectedPrefix: "error|unsupported-transfer-encoding|",
+    },
+    ParserCase {
+      name: "transfer encoding with content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nTransfer-Encoding: gzip\r\n\r\nhello",
+      expectedPrefix: "error|unsupported-transfer-encoding|",
+    },
+    ParserCase {
+      name: "identity transfer encoding",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\nhello",
+      expectedPrefix: "complete|POST|/|HTTP/1.1|keep-alive|5|0|",
+    },
+    ParserCase {
+      name: "connection token whitespace",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: keep-alive, close \r\n\r\n",
+      expectedPrefix: "complete|GET|/|HTTP/1.1|close|0|0|",
+    },
+  ])
+}
+
+export function testParserFuzzCorpusForHeaderShapeAndObsFoldLikeInputs(): void {
+  assertParserCases([
+    ParserCase {
+      name: "header name with whitespace",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nBad Header: value\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "header value with bare carriage return",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nX-Test: one\rtwo\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "obs fold continuation",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nX-Test: one\r\n two\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "obs fold with tab",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nX-Test: one\r\n\ttwo\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "repeated ordinary header",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nAccept: text/plain\r\nAccept: application/json\r\n\r\n",
+      expectedPrefix: "complete|GET|/|HTTP/1.1|keep-alive|0|0|",
+    },
+    ParserCase {
+      name: "duplicate host",
+      requestText: "GET / HTTP/1.1\r\nHost: example.test\r\nHost: other.test\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "http10 without host closes by default",
+      requestText: "GET / HTTP/1.0\r\n\r\n",
+      expectedPrefix: "complete|GET|/|HTTP/1.0|close|0|0|",
+    },
+    ParserCase {
+      name: "http10 keep alive token",
+      requestText: "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+      expectedPrefix: "complete|GET|/|HTTP/1.0|keep-alive|0|0|",
+    },
+  ])
+}
+
+export function testRejectedRequestClosesBeforePipelinedBytesAreDispatched(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+    capacity: 2,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "POST /bad HTTP/1.1\r\nHost: example.test\r\nContent-Length: nope\r\n\r\nGET /ok HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 0)
+  Assert.isTrue(response.contains("HTTP/1.1 400 Bad Request"))
+  Assert.equal(response.split("HTTP/1.1").length, 2)
+  Assert.isTrue(response.contains("Connection: close"))
 }
