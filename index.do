@@ -22,6 +22,7 @@ import class NativeHttpServer from "./native_http_server.hpp" as doof_http_serve
     port: int,
     maxBodyBytes: long,
     idleTimeoutMillis: int,
+    responseTimeoutMillis: int,
     maxRequestsPerConnection: int,
     onRequest: (exchange: NativeExchange): int,
   ): Result<NativeHttpServer, string>
@@ -36,6 +37,7 @@ export class ServerOptions {
   readonly port: int
   readonly maxBodyBytes: long = 1_048_576L
   readonly idleTimeoutMillis: int = 30_000
+  readonly responseTimeoutMillis: int = 30_000
   readonly maxRequestsPerConnection: int = 0
 }
 
@@ -182,6 +184,7 @@ export class Server {
       options.port,
       options.maxBodyBytes,
       options.idleTimeoutMillis,
+      options.responseTimeoutMillis,
       options.maxRequestsPerConnection,
       (exchange: NativeExchange): int => requestDisposition(requests, exchange),
     )

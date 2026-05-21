@@ -9,6 +9,11 @@ import class NativeHttpTestRequest from "../native_http_server_test_support.hpp"
   wait(): string
 }
 
+import class NativeHttpSlowTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpSlowTestRequest {
+  static start(host: string, port: int, firstChunk: string, secondChunk: string, delayMillis: int): NativeHttpSlowTestRequest
+  wait(): string
+}
+
 class DispatchState {
   method: string = ""
   target: string = ""
@@ -88,6 +93,15 @@ function handleSingleResponse(
 ): void {
   state.count += 1
   try! request.respond(Response.text(200, "ok\n"))
+  try! requestChannel.close()
+}
+
+function handleWithoutResponse(
+  state: SingleResponseState,
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  state.count += 1
   try! requestChannel.close()
 }
 
@@ -298,6 +312,94 @@ export function testConnectionRequestLimitClosesAfterConfiguredCount(): void {
   Assert.equal(state.count, 1)
   Assert.equal(response.split("HTTP/1.1 200 OK").length, 2)
   Assert.isTrue(response.contains("Connection: close"))
+}
+
+export function testHandlerThatNeverRespondsTimesOutRequest(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleWithoutResponse(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0, responseTimeoutMillis: 20 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 1)
+  Assert.isTrue(response.contains("HTTP/1.1 504 Gateway Timeout"))
+  Assert.isTrue(response.contains("Connection: close"))
+}
+
+export function testSlowPartialHeadersExpireWithoutDispatch(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0, idleTimeoutMillis: 20 },
+    requests,
+  }
+
+  client := NativeHttpSlowTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test",
+    "",
+    80,
+  )
+
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 0)
+  Assert.equal(response, "")
+}
+
+export function testChunkedRequestBodyIsRejectedBeforeDispatch(): void {
+  assertRequestRejectedBeforeDispatch(
+    "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    "HTTP/1.1 501 Not Implemented",
+  )
+}
+
+export function testMalformedParserInputsAreRejectedBeforeDispatch(): void {
+  assertRequestRejectedBeforeDispatch(
+    "G ET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
+  assertRequestRejectedBeforeDispatch(
+    "GET /bad target HTTP/1.1\r\nHost: example.test\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
+  assertRequestRejectedBeforeDispatch(
+    "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: abc\r\n\r\n",
+    "HTTP/1.1 400 Bad Request",
+  )
+  assertRequestRejectedBeforeDispatch(
+    "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\na",
+    "HTTP/1.1 400 Bad Request",
+  )
 }
 
 export function testHttp11RequestRequiresHostHeader(): void {

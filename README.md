@@ -46,10 +46,17 @@ function main(): int {
   request handler. HTTP/1.1 connections stay open by default and can serve
   sequential requests; `Connection: close` closes after the current response.
 - `ServerOptions.idleTimeoutMillis` defaults to 30 seconds for otherwise-idle
-  keep-alive connections. Set it to `0` to disable idle expiry.
+  keep-alive connections and incomplete request reads, which bounds slowloris
+  style partial-header clients. Set it to `0` to disable idle expiry.
+- `ServerOptions.responseTimeoutMillis` defaults to 30 seconds. If a request is
+  delivered but its handler never calls `request.respond(...)`, the server sends
+  `504 Gateway Timeout` and closes the connection. Set it to `0` to disable
+  this timeout.
 - `ServerOptions.maxRequestsPerConnection` defaults to `0` (unbounded). Set a
   positive value to close a connection after that many completed requests.
-- The internal reactor has an explicit platform seam; the first backend is a
-  macOS `kqueue` implementation.
+- The internal reactor has an explicit platform seam. macOS uses `kqueue`;
+  other POSIX platforms use a portable `poll` fallback.
 - The first implementation does not yet support streaming request or response
   bodies, chunked transfer encoding, or concurrent HTTP/1.1 pipeline handling.
+  Requests with non-identity `Transfer-Encoding`, including chunked requests,
+  are rejected with `501 Not Implemented` before dispatch.
