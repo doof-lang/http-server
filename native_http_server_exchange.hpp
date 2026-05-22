@@ -17,7 +17,7 @@ public:
         const std::shared_ptr<std::vector<uint8_t>>& body
     );
 
-    void upgradeWebSocket(
+    void upgradeToWebSocket(
         std::shared_ptr<NativeWebSocketConnection> websocket,
         const std::string& headersText,
         const std::string& subprotocol,

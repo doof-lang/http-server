@@ -16,7 +16,7 @@ import class NativeExchange from "./native_http_server.hpp" as doof_http_server:
 
 import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
   respond(status: int, headersText: string, body: readonly byte[]): Result<void, string>
-  upgradeWebSocket(
+  upgradeToWebSocket(
     websocket: NativeWebSocketConnection,
     headersText: string,
     subprotocol: string,
@@ -224,7 +224,7 @@ export class Request {
     ))
   }
 
-  upgradeWebSocket(connection: WebSocketConnection): void {
+  upgradeToWebSocket(connection: WebSocketConnection): void {
     if !headersAreSafe(connection.options.headers) {
       connection.handler(WebSocketError {
         connection,
@@ -237,7 +237,7 @@ export class Request {
     }
 
     subprotocol := connection.options.subprotocol ?? ""
-    this.responder.upgradeWebSocket(
+    this.responder.upgradeToWebSocket(
       connection.native,
       renderHeaders(connection.options.headers),
       subprotocol,

@@ -193,7 +193,7 @@ function handleWebSocketUpgrade(
   connection := WebSocketConnection {
     handler: (event): void => handleWebSocketEventAny(state, event),
   }
-  request.upgradeWebSocket(connection)
+  request.upgradeToWebSocket(connection)
   try! requestChannel.close()
 }
 

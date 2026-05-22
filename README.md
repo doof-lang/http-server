@@ -38,7 +38,7 @@ function main(): int {
 ## Notes
 
 - `Request` and `Response` expose readonly data only.
-- `Request.upgradeWebSocket(connection)` claims an HTTP request for WebSocket
+- `Request.upgradeToWebSocket(connection)` claims an HTTP request for WebSocket
   upgrade using a caller-created `WebSocketConnection`. The method returns
   `void`; handshake and runtime failures are reported as `WebSocketError`
   events through the connection handler.

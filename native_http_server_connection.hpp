@@ -534,7 +534,7 @@ inline doof::Result<void, std::string> NativeResponder::respond(
     return result;
 }
 
-inline void NativeResponder::upgradeWebSocket(
+inline void NativeResponder::upgradeToWebSocket(
     std::shared_ptr<NativeWebSocketConnection> websocket,
     const std::string& headersText,
     const std::string& subprotocol,
