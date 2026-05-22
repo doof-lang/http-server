@@ -1,3 +1,5 @@
+import { encodeBase64, sha1String } from "std/crypto"
+
 export function validateWebSocketHandshake(
   method: string,
   version: string,
@@ -38,7 +40,8 @@ export function validateWebSocketHandshake(
     return Failure { error: "bad-websocket-handshake|invalid Sec-WebSocket-Key" }
   }
 
-  return Success { value: key }
+  accept := encodeBase64(sha1String(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+  return Success { value: accept }
 }
 
 function headerValue(headersText: string, wantedName: string): string | null {

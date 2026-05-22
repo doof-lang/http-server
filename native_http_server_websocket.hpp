@@ -1,7 +1,6 @@
 #pragma once
 
 #include "native_http_server_protocol.hpp"
-#include "native_http_server_websocket_crypto.hpp"
 #include "native_http_server_websocket_frames.hpp"
 #include "websocket_internal.hpp"
 
@@ -203,15 +202,15 @@ private:
 namespace detail {
 
 inline doof::Result<std::string, std::string> validateWebSocketHandshake(const ParsedRequest& request) {
-    auto key = app::websocket_internal::validateWebSocketHandshake(
+    auto accept = app::websocket_internal::validateWebSocketHandshake(
         request.method,
         request.version,
         request.headersText
     );
-    if (key.isFailure()) {
-        return doof::Result<std::string, std::string>::failure(key.error());
+    if (accept.isFailure()) {
+        return doof::Result<std::string, std::string>::failure(accept.error());
     }
-    return doof::Result<std::string, std::string>::success(websocketAccept(key.value()));
+    return doof::Result<std::string, std::string>::success(accept.value());
 }
 
 inline std::vector<uint8_t> websocketHandshakeBytes(
