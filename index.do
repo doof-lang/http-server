@@ -14,6 +14,31 @@ import class NativeExchange from "./native_http_server.hpp" as doof_http_server:
 
 import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
   respond(status: int, headersText: string, body: readonly byte[]): Result<void, string>
+  upgradeWebSocket(
+    websocket: NativeWebSocketConnection,
+    headersText: string,
+    subprotocol: string,
+    callback: (event: NativeWebSocketEvent): void,
+  ): void
+}
+
+import class NativeWebSocketEvent from "./native_http_server.hpp" as doof_http_server::NativeWebSocketEvent {
+  kind(): int
+  text(): string
+  bytes(): readonly byte[]
+  code(): int
+  reason(): string
+  wasClean(): bool
+  error(): string
+}
+
+import class NativeWebSocketConnection from "./native_http_server.hpp" as doof_http_server::NativeWebSocketConnection {
+  static create(): NativeWebSocketConnection
+  sendText(text: string): Result<void, string>
+  sendBinary(bytes: readonly byte[]): Result<void, string>
+  ping(): Result<void, string>
+  close(code: int, reason: string): Result<void, string>
+  state(): int
 }
 
 import class NativeHttpServer from "./native_http_server.hpp" as doof_http_server::NativeHttpServer {
@@ -44,6 +69,96 @@ export class ServerOptions {
 export class ServerError {
   readonly kind: string
   readonly message: string
+}
+
+export enum WebSocketState {
+  Connecting,
+  Open,
+  Closing,
+  Closed,
+  Error,
+}
+
+export const WEBSOCKET_CLOSE_NORMAL = 1000
+export const WEBSOCKET_CLOSE_GOING_AWAY = 1001
+export const WEBSOCKET_CLOSE_PROTOCOL_ERROR = 1002
+export const WEBSOCKET_CLOSE_UNSUPPORTED_DATA = 1003
+export const WEBSOCKET_CLOSE_INVALID_PAYLOAD = 1007
+export const WEBSOCKET_CLOSE_POLICY_VIOLATION = 1008
+export const WEBSOCKET_CLOSE_MESSAGE_TOO_BIG = 1009
+export const WEBSOCKET_CLOSE_INTERNAL_ERROR = 1011
+
+export class WebSocketOptions {
+  readonly eventCapacity: int = 1024
+  readonly headers: readonly HttpHeader[] = []
+  readonly subprotocol: string | null = null
+}
+
+export type WebSocketEvent =
+  WebSocketOpen |
+  WebSocketText |
+  WebSocketBinary |
+  WebSocketWritable |
+  WebSocketClose |
+  WebSocketError
+
+export class WebSocketOpen {
+  readonly connection: WebSocketConnection
+}
+
+export class WebSocketText {
+  readonly connection: WebSocketConnection
+  readonly text: string
+}
+
+export class WebSocketBinary {
+  readonly connection: WebSocketConnection
+  readonly bytes: readonly byte[]
+}
+
+export class WebSocketWritable {
+  readonly connection: WebSocketConnection
+}
+
+export class WebSocketClose {
+  readonly connection: WebSocketConnection
+  readonly code: int
+  readonly reason: string
+  readonly wasClean: bool
+}
+
+export class WebSocketError {
+  readonly connection: WebSocketConnection
+  readonly error: ServerError
+}
+
+export class WebSocketConnection {
+  readonly handler: (event: WebSocketEvent): void
+  readonly options: WebSocketOptions = WebSocketOptions {}
+  private readonly native: NativeWebSocketConnection = NativeWebSocketConnection()
+
+  sendText(text: string): Result<void, ServerError> {
+    return mapNativeVoid(this.native.sendText(text))
+  }
+
+  sendBinary(bytes: readonly byte[]): Result<void, ServerError> {
+    return mapNativeVoid(this.native.sendBinary(bytes))
+  }
+
+  ping(): Result<void, ServerError> {
+    return mapNativeVoid(this.native.ping())
+  }
+
+  close(
+    code: int = 1000,
+    reason: string = "",
+  ): Result<void, ServerError> {
+    return mapNativeVoid(this.native.close(code, reason))
+  }
+
+  state(): WebSocketState {
+    return nativeStateToPublic(this.native.state())
+  }
 }
 
 export class Request {
@@ -105,6 +220,29 @@ export class Request {
       renderHeaders(response.headers),
       response.body,
     ))
+  }
+
+  upgradeWebSocket(connection: WebSocketConnection): void {
+    if !headersAreSafe(connection.options.headers) {
+      connection.handler(WebSocketError {
+        connection,
+        error: ServerError {
+          kind: "invalid-header",
+          message: "WebSocket response headers cannot contain CR or LF characters",
+        },
+      })
+      return
+    }
+
+    subprotocol := connection.options.subprotocol ?? ""
+    this.responder.upgradeWebSocket(
+      connection.native,
+      renderHeaders(connection.options.headers),
+      subprotocol,
+      (event: NativeWebSocketEvent): void => {
+        connection.handler(nativeWebSocketEventToPublic(connection, event))
+      },
+    )
   }
 }
 
@@ -266,6 +404,48 @@ function parseHeaders(headerText: string): readonly HttpHeader[] {
     })
   }
   return headers.buildReadonly()
+}
+
+function nativeStateToPublic(state: int): WebSocketState {
+  return case state {
+    0 -> WebSocketState.Connecting,
+    1 -> WebSocketState.Open,
+    2 -> WebSocketState.Closing,
+    3 -> WebSocketState.Closed,
+    _ -> WebSocketState.Error,
+  }
+}
+
+function nativeWebSocketEventToPublic(
+  connection: WebSocketConnection,
+  event: NativeWebSocketEvent,
+): WebSocketEvent {
+  return case event.kind() {
+    0 -> WebSocketOpen {
+      connection,
+    },
+    1 -> WebSocketText {
+      connection,
+      text: event.text(),
+    },
+    2 -> WebSocketBinary {
+      connection,
+      bytes: event.bytes(),
+    },
+    3 -> WebSocketWritable {
+      connection,
+    },
+    4 -> WebSocketClose {
+      connection,
+      code: event.code(),
+      reason: event.reason(),
+      wasClean: event.wasClean(),
+    },
+    _ -> WebSocketError {
+      connection,
+      error: parseServerError(event.error()),
+    },
+  }
 }
 
 function renderHeaders(headers: readonly HttpHeader[]): string {

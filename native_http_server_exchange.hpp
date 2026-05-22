@@ -1,6 +1,6 @@
 #pragma once
 
-#include "native_http_server_protocol.hpp"
+#include "native_http_server_websocket.hpp"
 
 namespace doof_http_server {
 
@@ -8,8 +8,8 @@ class NativeConnection;
 
 class NativeResponder : public std::enable_shared_from_this<NativeResponder> {
 public:
-    NativeResponder(std::shared_ptr<NativeConnection> connection, bool requestKeepAlive)
-        : connection_(std::move(connection)), requestKeepAlive_(requestKeepAlive) {}
+    NativeResponder(std::shared_ptr<NativeConnection> connection, detail::ParsedRequest request)
+        : connection_(std::move(connection)), request_(std::move(request)) {}
 
     doof::Result<void, std::string> respond(
         int32_t status,
@@ -17,10 +17,17 @@ public:
         const std::shared_ptr<std::vector<uint8_t>>& body
     );
 
+    void upgradeWebSocket(
+        std::shared_ptr<NativeWebSocketConnection> websocket,
+        const std::string& headersText,
+        const std::string& subprotocol,
+        NativeWebSocketConnection::EventCallback callback
+    );
+
 private:
     mutable std::mutex mutex_;
     std::shared_ptr<NativeConnection> connection_;
-    bool requestKeepAlive_;
+    detail::ParsedRequest request_;
     bool completed_ = false;
     bool responseWritten_ = false;
 };

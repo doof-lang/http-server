@@ -2,7 +2,20 @@ import { Assert } from "std/assert"
 import { AsyncEventChannel, createMainAsyncEventChannel, runMainEventLoop } from "std/event"
 import { HttpHeader } from "std/http"
 
-import { Request, Response, Server, ServerOptions } from "../index"
+import {
+  Request,
+  Response,
+  Server,
+  ServerOptions,
+  WebSocketClose,
+  WebSocketConnection,
+  WebSocketError,
+  WebSocketEvent,
+  WebSocketBinary,
+  WebSocketOpen,
+  WebSocketText,
+  WebSocketWritable,
+} from "../index"
 
 import class NativeHttpTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpTestRequest {
   static start(host: string, port: int, requestText: string): NativeHttpTestRequest
@@ -16,6 +29,12 @@ import class NativeHttpSlowTestRequest from "../native_http_server_test_support.
 
 import class NativeHttpRequestParserFuzz from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpRequestParserFuzz {
   static parse(requestText: string, maxBodyBytes: long): string
+}
+
+import class NativeWebSocketTestClient from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeWebSocketTestClient {
+  static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
+  static startHandshakeOnly(host: string, port: int, requestText: string): NativeWebSocketTestClient
+  wait(): string
 }
 
 class DispatchState {
@@ -39,6 +58,13 @@ class KeepAliveState {
 
 class SingleResponseState {
   count: int = 0
+}
+
+class WebSocketTestState {
+  openCount: int = 0
+  text: string = ""
+  closeCode: int = 0
+  errorKind: string = ""
 }
 
 class ParserCase {
@@ -112,6 +138,60 @@ function handleWithoutResponse(
   request: Request,
 ): void {
   state.count += 1
+  try! requestChannel.close()
+}
+
+function handleWebSocketEventAny(
+  state: WebSocketTestState,
+  event: WebSocketOpen | WebSocketText | WebSocketBinary | WebSocketWritable | WebSocketClose | WebSocketError,
+): void {
+  opened := event as WebSocketOpen
+  case opened {
+    _: Success -> {
+      state.openCount += 1
+      return
+    }
+    _: Failure -> {}
+  }
+
+  textEvent := event as WebSocketText
+  case textEvent {
+    textSuccess: Success -> {
+      state.text = textSuccess.value.text
+      try! textSuccess.value.connection.sendText("echo:" + textSuccess.value.text)
+      return
+    }
+    _: Failure -> {}
+  }
+
+  closeEvent := event as WebSocketClose
+  case closeEvent {
+    closeSuccess: Success -> {
+      state.closeCode = closeSuccess.value.code
+      return
+    }
+    _: Failure -> {}
+  }
+
+  errorEvent := event as WebSocketError
+  case errorEvent {
+    errorSuccess: Success -> {
+      state.errorKind = errorSuccess.value.error.kind
+      return
+    }
+    _: Failure -> {}
+  }
+}
+
+function handleWebSocketUpgrade(
+  state: WebSocketTestState,
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  connection := WebSocketConnection {
+    handler: (event): void => handleWebSocketEventAny(state, event),
+  }
+  request.upgradeWebSocket(connection)
   try! requestChannel.close()
 }
 
@@ -234,6 +314,70 @@ export function testResponseConveniencesPreserveExplicitContentType(): void {
 
   Assert.equal(response.headers.length, 1)
   Assert.equal(response.headers[0].value, "text/custom")
+}
+
+export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
+  state := WebSocketTestState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeWebSocketTestClient.startExchangeText(
+    server.host,
+    server.port,
+    "GET /socket HTTP/1.1\r\nHost: example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    "hello",
+  )
+
+  runMainEventLoop()
+  clientResponse := client.wait()
+  try! server.close()
+
+  Assert.equal(state.openCount, 1)
+  Assert.equal(state.text, "hello")
+  Assert.isTrue(clientResponse.contains("HTTP/1.1 101 Switching Protocols"), clientResponse)
+  Assert.isTrue(clientResponse.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), clientResponse)
+  Assert.isTrue(clientResponse.contains("frame|1|echo:hello"), clientResponse)
+}
+
+export function testInvalidWebSocketHandshakeReportsConnectionError(): void {
+  state := WebSocketTestState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeWebSocketTestClient.startHandshakeOnly(
+    server.host,
+    server.port,
+    "GET /socket HTTP/1.1\r\nHost: example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 12\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  clientResponse := client.wait()
+  try! server.close()
+
+  Assert.equal(state.errorKind, "bad-websocket-handshake")
+  Assert.isTrue(clientResponse.contains("HTTP/1.1 400 Bad Request"))
 }
 
 export function testHttp11ConnectionCanServeSequentialRequests(): void {

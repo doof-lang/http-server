@@ -8,6 +8,7 @@
         "native_http_server.hpp",
         "native_http_server_common.hpp",
         "native_http_server_protocol.hpp",
+        "native_http_server_websocket.hpp",
         "native_http_server_reactor.hpp",
         "native_http_server_transport.hpp",
         "native_http_server_exchange.hpp",
@@ -18,17 +19,5 @@
     }
   },
   "dependencies": {
-    "std/blob": {
-      "path": "../blob"
-    },
-    "std/event": {
-      "path": "../event"
-    },
-    "std/http": {
-      "path": "../http"
-    },
-    "std/json": {
-      "path": "../json"
-    }
   }
 }
