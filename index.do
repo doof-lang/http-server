@@ -3,6 +3,8 @@ import { AsyncEventChannel, AsyncEventChannelError } from "std/event"
 import { HttpHeader } from "std/http"
 import { formatJsonValue, parseJsonValue } from "std/json"
 
+import { validateWebSocketHandshake as _validateWebSocketHandshakeForNative } from "./websocket_internal"
+
 import class NativeExchange from "./native_http_server.hpp" as doof_http_server::NativeExchange {
   method(): string
   target(): string

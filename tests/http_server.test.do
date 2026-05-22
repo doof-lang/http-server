@@ -65,6 +65,7 @@ class WebSocketTestState {
   text: string = ""
   closeCode: int = 0
   errorKind: string = ""
+  errorMessage: string = ""
 }
 
 class ParserCase {
@@ -177,6 +178,7 @@ function handleWebSocketEventAny(
   case errorEvent {
     errorSuccess: Success -> {
       state.errorKind = errorSuccess.value.error.kind
+      state.errorMessage = errorSuccess.value.error.message
       return
     }
     _: Failure -> {}
@@ -343,8 +345,8 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
   clientResponse := client.wait()
   try! server.close()
 
-  Assert.equal(state.openCount, 1)
-  Assert.equal(state.text, "hello")
+  Assert.equal(state.openCount, 1, "openCount ${state.errorKind}:${state.errorMessage} ${clientResponse}")
+  Assert.equal(state.text, "hello", "text")
   Assert.isTrue(clientResponse.contains("HTTP/1.1 101 Switching Protocols"), clientResponse)
   Assert.isTrue(clientResponse.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), clientResponse)
   Assert.isTrue(clientResponse.contains("frame|1|echo:hello"), clientResponse)
