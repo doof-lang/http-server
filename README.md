@@ -45,8 +45,9 @@ function main(): int {
 - WebSocket v1 supports HTTP/1.1 RFC 6455 handshakes, text and binary messages,
   ping/pong, close frames, and fragmented text/binary messages. WebSocket
   message size is bounded by `ServerOptions.maxBodyBytes`.
-- Request bodies are buffered up to `ServerOptions.maxBodyBytes`; oversized
-  payloads are rejected with `413 Payload Too Large`.
+- Request bodies are buffered up to `ServerOptions.maxBodyBytes`, including
+  chunked transfer-encoded bodies; oversized payloads are rejected with
+  `413 Payload Too Large`.
 - If the supplied event channel is full or closed, the listener rejects the
   request with `503 Service Unavailable` instead of growing an unbounded queue.
 - A native connection object owns socket lifetime independently of any one
@@ -64,7 +65,6 @@ function main(): int {
 - The internal reactor has an explicit platform seam. macOS uses `kqueue`;
   other POSIX platforms use a portable `poll` fallback.
 - The first implementation does not yet support streaming request or response
-  bodies, chunked transfer encoding, WebSocket compression extensions, or
-  concurrent HTTP/1.1 pipeline handling. Requests with non-identity
-  `Transfer-Encoding`, including chunked requests, are rejected with
-  `501 Not Implemented` before dispatch.
+  bodies, WebSocket compression extensions, or concurrent HTTP/1.1 pipeline
+  handling. Requests with unsupported `Transfer-Encoding` values are rejected
+  with `501 Not Implemented` before dispatch.

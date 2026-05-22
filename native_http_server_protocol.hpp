@@ -146,6 +146,72 @@ inline bool parseContentLength(const std::string& text, int64_t& out) {
     return true;
 }
 
+inline int hexValue(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    return -1;
+}
+
+inline bool parseChunkSize(std::string_view text, int64_t& out) {
+    const size_t extension = text.find(';');
+    const std::string_view digits = extension == std::string_view::npos ? text : text.substr(0, extension);
+    if (digits.empty()) {
+        return false;
+    }
+    int64_t value = 0;
+    for (char ch : digits) {
+        const int digit = hexValue(ch);
+        if (digit < 0) {
+            return false;
+        }
+        if (value > (INT64_MAX - digit) / 16) {
+            return false;
+        }
+        value = value * 16 + digit;
+    }
+    out = value;
+    return true;
+}
+
+inline bool parseTransferEncoding(
+    const std::string& value,
+    bool& chunked,
+    std::string& error
+) {
+    size_t start = 0;
+    while (start <= value.size()) {
+        const size_t separator = value.find(',', start);
+        const size_t end = separator == std::string::npos ? value.size() : separator;
+        const std::string token = toLower(trim(value.substr(start, end - start)));
+        if (token.empty()) {
+            error = "malformed-request|invalid Transfer-Encoding header";
+            return false;
+        }
+        if (token == "chunked") {
+            if (chunked || separator != std::string::npos) {
+                error = "unsupported-transfer-encoding|unsupported Transfer-Encoding";
+                return false;
+            }
+            chunked = true;
+        } else if (token != "identity") {
+            error = "unsupported-transfer-encoding|unsupported Transfer-Encoding";
+            return false;
+        }
+        if (separator == std::string::npos) {
+            break;
+        }
+        start = separator + 1;
+    }
+    return true;
+}
+
 struct ParsedRequest {
     std::string method;
     std::string target;
@@ -247,6 +313,85 @@ struct ParseAttempt {
     std::string error;
 };
 
+inline ParseAttempt parseChunkedBody(
+    std::string& buffered,
+    size_t bodyStart,
+    int64_t maxBodyBytes,
+    ParsedRequest& parsed
+) {
+    size_t cursor = bodyStart;
+    int64_t decodedSize = 0;
+    auto body = std::make_shared<std::vector<uint8_t>>();
+
+    while (true) {
+        const size_t lineEnd = buffered.find("\r\n", cursor);
+        if (lineEnd == std::string::npos) {
+            return ParseAttempt {};
+        }
+
+        int64_t chunkSize = 0;
+        if (!parseChunkSize(std::string_view(buffered).substr(cursor, lineEnd - cursor), chunkSize)) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid chunk size" };
+        }
+        if (chunkSize > maxBodyBytes - decodedSize) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "body-too-large|request body exceeds configured maxBodyBytes" };
+        }
+        cursor = lineEnd + 2;
+
+        if (chunkSize == 0) {
+            if (buffered.size() < cursor + 2) {
+                return ParseAttempt {};
+            }
+            if (buffered.compare(cursor, 2, "\r\n") == 0) {
+                cursor += 2;
+                parsed.body = std::move(body);
+                buffered.erase(0, cursor);
+                return ParseAttempt { ParseStatus::Complete, std::move(parsed), "" };
+            }
+
+            const size_t trailerEnd = buffered.find("\r\n\r\n", cursor);
+            if (trailerEnd == std::string::npos) {
+                return ParseAttempt {};
+            }
+            std::istringstream trailers(buffered.substr(cursor, trailerEnd - cursor));
+            std::string trailerLine;
+            while (std::getline(trailers, trailerLine)) {
+                if (!trailerLine.empty() && trailerLine.back() == '\r') {
+                    trailerLine.pop_back();
+                }
+                const size_t separator = trailerLine.find(':');
+                if (separator == std::string::npos || separator == 0 ||
+                    !isHeaderName(trailerLine.substr(0, separator)) ||
+                    !isHeaderValue(trim(trailerLine.substr(separator + 1)))) {
+                    return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid trailer line" };
+                }
+            }
+            cursor = trailerEnd + 4;
+            parsed.body = std::move(body);
+            buffered.erase(0, cursor);
+            return ParseAttempt { ParseStatus::Complete, std::move(parsed), "" };
+        }
+
+        const size_t chunkSizeBytes = static_cast<size_t>(chunkSize);
+        if (chunkSizeBytes > SIZE_MAX - cursor - 2) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid chunk size" };
+        }
+        const size_t chunkEnd = cursor + chunkSizeBytes;
+        if (buffered.size() < chunkEnd + 2) {
+            return ParseAttempt {};
+        }
+        if (buffered.compare(chunkEnd, 2, "\r\n") != 0) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|invalid chunk terminator" };
+        }
+
+        body->insert(body->end(),
+                     buffered.begin() + static_cast<std::ptrdiff_t>(cursor),
+                     buffered.begin() + static_cast<std::ptrdiff_t>(chunkEnd));
+        decodedSize += chunkSize;
+        cursor = chunkEnd + 2;
+    }
+}
+
 inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     constexpr size_t maxHeaderBytes = 64 * 1024;
     constexpr size_t maxHeaderCount = 100;
@@ -301,6 +446,7 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     int64_t contentLength = 0;
     bool sawContentLength = false;
     bool sawHost = false;
+    bool sawChunkedTransferEncoding = false;
     bool connectionClose = false;
     bool connectionKeepAlive = false;
     size_t headerCount = 0;
@@ -338,8 +484,11 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
             }
             sawContentLength = true;
         }
-        if (lowerName == "transfer-encoding" && toLower(value) != "identity") {
-            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "unsupported-transfer-encoding|chunked transfer encoding is not supported yet" };
+        if (lowerName == "transfer-encoding") {
+            std::string transferEncodingError;
+            if (!parseTransferEncoding(value, sawChunkedTransferEncoding, transferEncodingError)) {
+                return ParseAttempt { ParseStatus::Error, ParsedRequest {}, transferEncodingError };
+            }
         }
         if (lowerName == "host") {
             if (sawHost || value.empty()) {
@@ -364,6 +513,14 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     }
 
     const size_t bodyStart = headerEnd + 4;
+    if (sawChunkedTransferEncoding) {
+        if (sawContentLength) {
+            return ParseAttempt { ParseStatus::Error, ParsedRequest {}, "malformed-request|Content-Length is not allowed with chunked Transfer-Encoding" };
+        }
+        parsed.keepAlive = requestShouldKeepAlive(parsed.version, connectionClose, connectionKeepAlive);
+        return parseChunkedBody(buffered, bodyStart, maxBodyBytes, parsed);
+    }
+
     const size_t totalSize = bodyStart + static_cast<size_t>(contentLength);
     if (buffered.size() < totalSize) {
         return ParseAttempt {};

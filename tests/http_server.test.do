@@ -263,6 +263,7 @@ export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
   response := client.wait()
   try! server.close()
 
+  println("chunked dispatch state method=${state.method} body=${state.body} response=${response}")
   Assert.equal(state.method, "POST")
   Assert.equal(state.target, "/items?q=doof")
   Assert.equal(state.path, "/items")
@@ -542,11 +543,35 @@ export function testSlowPartialHeadersExpireWithoutDispatch(): void {
   Assert.equal(response, "")
 }
 
-export function testChunkedRequestBodyIsRejectedBeforeDispatch(): void {
-  assertRequestRejectedBeforeDispatch(
-    "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
-    "HTTP/1.1 501 Not Implemented",
+export function testChunkedRequestBodyIsDispatched(): void {
+  state := DispatchState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleDispatch(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
   )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.method, "POST")
+  Assert.equal(state.body, "hello")
+  Assert.isTrue(response.contains("HTTP/1.1 201 Created"))
 }
 
 export function testMalformedParserInputsAreRejectedBeforeDispatch(): void {
@@ -636,12 +661,32 @@ export function testParserFuzzCorpusForLengthTransferAndWhitespaceCombinations()
     ParserCase {
       name: "chunked transfer encoding",
       requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
-      expectedPrefix: "error|unsupported-transfer-encoding|",
+      expectedPrefix: "complete|POST|/|HTTP/1.1|keep-alive|5|0|",
     },
     ParserCase {
       name: "transfer encoding with content length",
       requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nTransfer-Encoding: gzip\r\n\r\nhello",
       expectedPrefix: "error|unsupported-transfer-encoding|",
+    },
+    ParserCase {
+      name: "chunked transfer encoding with content length",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
+    },
+    ParserCase {
+      name: "chunked transfer encoding with split body",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhell",
+      expectedPrefix: "need-more",
+    },
+    ParserCase {
+      name: "chunked transfer encoding over body limit",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nhello!!!!\r\n0\r\n\r\n",
+      expectedPrefix: "error|body-too-large|",
+    },
+    ParserCase {
+      name: "malformed chunk size",
+      requestText: "POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\nz\r\nhello\r\n0\r\n\r\n",
+      expectedPrefix: "error|malformed-request|",
     },
     ParserCase {
       name: "identity transfer encoding",
