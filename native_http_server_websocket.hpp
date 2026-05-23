@@ -202,7 +202,7 @@ private:
 namespace detail {
 
 inline doof::Result<std::string, std::string> validateWebSocketHandshake(const ParsedRequest& request) {
-    auto accept = app::websocket_internal::validateWebSocketHandshake(
+    auto accept = std_::http_server::websocket_internal::validateWebSocketHandshake(
         request.method,
         request.version,
         request.headersText

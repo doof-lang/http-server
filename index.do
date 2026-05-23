@@ -171,7 +171,7 @@ export class Request {
   readonly version: string
   readonly headers: readonly HttpHeader[]
   readonly body: readonly byte[]
-  private readonly responder: NativeResponder
+  private readonly responder: NativeResponder | null = null
 
   header(name: string): string | null {
     lowerName := name.toLowerCase()
@@ -194,6 +194,13 @@ export class Request {
     return values.buildReadonly()
   }
 
+  isWebSocketUpgrade(): bool {
+    upgrade := this.header("Upgrade") else {
+      return false
+    }
+    return upgrade.trim().toLowerCase() == "websocket" && this.headerContainsToken("Connection", "upgrade")
+  }
+
   getBlob(): readonly byte[] {
     return this.body
   }
@@ -208,6 +215,15 @@ export class Request {
   }
 
   respond(response: Response): Result<void, ServerError> {
+    nativeResponder := this.responder else {
+      return Failure {
+        error: ServerError {
+          kind: "missing-responder",
+          message: "Request was not created by Server.listen and cannot send a response",
+        }
+      }
+    }
+
     if !headersAreSafe(response.headers) {
       return Failure {
         error: ServerError {
@@ -217,7 +233,7 @@ export class Request {
       }
     }
 
-    return mapNativeVoid(this.responder.respond(
+    return mapNativeVoid(nativeResponder.respond(
       response.status,
       renderHeaders(response.headers),
       response.body,
@@ -225,6 +241,17 @@ export class Request {
   }
 
   upgradeToWebSocket(connection: WebSocketConnection): void {
+    nativeResponder := this.responder else {
+      connection.handler(WebSocketError {
+        connection,
+        error: ServerError {
+          kind: "missing-responder",
+          message: "Request was not created by Server.listen and cannot be upgraded",
+        },
+      })
+      return
+    }
+
     if !headersAreSafe(connection.options.headers) {
       connection.handler(WebSocketError {
         connection,
@@ -237,7 +264,7 @@ export class Request {
     }
 
     subprotocol := connection.options.subprotocol ?? ""
-    this.responder.upgradeToWebSocket(
+    nativeResponder.upgradeToWebSocket(
       connection.native,
       renderHeaders(connection.options.headers),
       subprotocol,
@@ -245,6 +272,35 @@ export class Request {
         connection.handler(nativeWebSocketEventToPublic(connection, event))
       },
     )
+  }
+
+  private headerContainsToken(name: string, token: string): bool {
+    lowerName := name.toLowerCase()
+    lowerToken := token.toLowerCase()
+    for header of this.headers {
+      if header.name.toLowerCase() != lowerName {
+        continue
+      }
+      value := header.value
+      let remaining = value
+      while true {
+        separator := remaining.indexOf(",")
+        let part = remaining
+        if separator >= 0 {
+          part = remaining.substring(0, separator)
+          remaining = remaining.slice(separator + 1)
+        } else {
+          remaining = ""
+        }
+        if part.trim().toLowerCase() == lowerToken {
+          return true
+        }
+        if remaining == "" {
+          break
+        }
+      }
+    }
+    return false
   }
 }
 

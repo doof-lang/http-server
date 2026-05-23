@@ -66,6 +66,7 @@ class WebSocketTestState {
   closeCode: int = 0
   errorKind: string = ""
   errorMessage: string = ""
+  upgradeAttempt: bool = false
 }
 
 class ParserCase {
@@ -190,6 +191,7 @@ function handleWebSocketUpgrade(
   requestChannel: AsyncEventChannel<Request>,
   request: Request,
 ): void {
+  state.upgradeAttempt = request.isWebSocketUpgrade()
   connection := WebSocketConnection {
     handler: (event): void => handleWebSocketEventAny(state, event),
   }
@@ -347,6 +349,7 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
   try! server.close()
 
   Assert.equal(state.openCount, 1, "openCount ${state.errorKind}:${state.errorMessage} ${clientResponse}")
+  Assert.isTrue(state.upgradeAttempt)
   Assert.equal(state.text, "hello", "text")
   Assert.isTrue(clientResponse.contains("HTTP/1.1 101 Switching Protocols"), clientResponse)
   Assert.isTrue(clientResponse.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), clientResponse)
@@ -380,6 +383,7 @@ export function testInvalidWebSocketHandshakeReportsConnectionError(): void {
   try! server.close()
 
   Assert.equal(state.errorKind, "bad-websocket-handshake")
+  Assert.isTrue(state.upgradeAttempt)
   Assert.isTrue(clientResponse.contains("HTTP/1.1 400 Bad Request"))
 }
 

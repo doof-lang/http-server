@@ -38,6 +38,9 @@ function main(): int {
 ## Notes
 
 - `Request` and `Response` expose readonly data only.
+- `Request.isWebSocketUpgrade()` returns true for websocket upgrade attempts
+  based on `Upgrade: websocket` and a `Connection` header containing the
+  `upgrade` token.
 - `Request.upgradeToWebSocket(connection)` claims an HTTP request for WebSocket
   upgrade using a caller-created `WebSocketConnection`. The method returns
   `void`; handshake and runtime failures are reported as `WebSocketError`
