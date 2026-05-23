@@ -1,10 +1,12 @@
 import { Assert } from "std/assert"
+import { BlobBuilder } from "std/blob"
 import { AsyncEventChannel, createMainAsyncEventChannel, runMainEventLoop } from "std/event"
 import { HttpHeader } from "std/http"
 
 import {
   Request,
   Response,
+  ResponseCompression,
   Server,
   ServerOptions,
   WebSocketClose,
@@ -20,6 +22,7 @@ import {
 import class NativeHttpTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpTestRequest {
   static start(host: string, port: int, requestText: string): NativeHttpTestRequest
   wait(): string
+  waitBytes(): readonly byte[]
 }
 
 import class NativeHttpSlowTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpSlowTestRequest {
@@ -131,6 +134,41 @@ function handleSingleResponse(
 ): void {
   state.count += 1
   try! request.respond(Response.text(200, "ok\n"))
+  try! requestChannel.close()
+}
+
+function buildCompressionPayload(): readonly byte[] {
+  builder := BlobBuilder()
+  builder.writeString("compress me\n")
+  builder.writeString("compress me\n")
+  builder.writeString("compress me\n")
+  return builder.build()
+}
+
+function handleGzipResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response {
+    status: 200,
+    headers: readonly [HttpHeader {
+      name: "Content-Type",
+      value: "text/plain; charset=utf-8",
+    }],
+    body: buildCompressionPayload(),
+    compression: ResponseCompression.Compress,
+  })
+  try! requestChannel.close()
+}
+
+function handleDefaultTextResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response.text(
+    200,
+    "default compression\nactual response\n",
+  ))
   try! requestChannel.close()
 }
 
@@ -319,6 +357,100 @@ export function testResponseConveniencesPreserveExplicitContentType(): void {
 
   Assert.equal(response.headers.length, 1)
   Assert.equal(response.headers[0].value, "text/custom")
+}
+
+export function testResponseGzipCompressionNegotiatesAcceptEncoding(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleGzipResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: br, gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  responseBytes := client.waitBytes()
+  try! server.close()
+
+  bodyStart := response.indexOf("\r\n\r\n") + 4
+  Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
+  Assert.isTrue(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
+  Assert.equal(responseBytes[bodyStart], byte(31))
+  Assert.equal(responseBytes[bodyStart + 1], byte(139))
+  Assert.equal(responseBytes[bodyStart + 2], byte(8))
+}
+
+export function testDefaultResponseCompressionUsesTextPolicy(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleDefaultTextResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isTrue(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
+  Assert.isFalse(response.contains("default compression\nactual response\n"), response)
+}
+
+export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleGzipResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("compress me\ncompress me\ncompress me\n"), response)
 }
 
 export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {

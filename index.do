@@ -1,5 +1,6 @@
 import { BlobBuilder, BlobReader } from "std/blob"
 import { AsyncEventChannel, AsyncEventChannelError } from "std/event"
+import { gzip } from "std/gzip"
 import { HttpHeader } from "std/http"
 import { formatJsonValue, parseJsonValue } from "std/json"
 
@@ -79,6 +80,12 @@ export enum WebSocketState {
   Closing,
   Closed,
   Error,
+}
+
+export enum ResponseCompression {
+  Default,
+  None,
+  Compress,
 }
 
 export const WEBSOCKET_CLOSE_NORMAL = 1000
@@ -233,10 +240,12 @@ export class Request {
       }
     }
 
+    finalResponse := responseForRequest(this, response)
+
     return mapNativeVoid(nativeResponder.respond(
-      response.status,
-      renderHeaders(response.headers),
-      response.body,
+      finalResponse.status,
+      renderHeaders(finalResponse.headers),
+      finalResponse.body,
     ))
   }
 
@@ -308,12 +317,14 @@ export class Response {
   readonly status: int
   readonly headers: readonly HttpHeader[]
   readonly body: readonly byte[]
+  readonly compression: ResponseCompression = ResponseCompression.Default
 
   static empty(status: int = 204): Response {
     return Response {
       status,
       headers: readonly [],
       body: readonly [],
+      compression: ResponseCompression.None,
     }
   }
 
@@ -321,11 +332,13 @@ export class Response {
     status: int,
     body: readonly byte[],
     headers: readonly HttpHeader[] = [],
+    compression: ResponseCompression = ResponseCompression.Default,
   ): Response {
     return Response {
       status,
       headers,
       body,
+      compression,
     }
   }
 
@@ -333,11 +346,13 @@ export class Response {
     status: int,
     body: string,
     headers: readonly HttpHeader[] = [],
+    compression: ResponseCompression = ResponseCompression.Default,
   ): Response {
     return Response.blob(
       status,
       encodeText(body),
       withDefaultContentType(headers, "text/plain; charset=utf-8"),
+      compression,
     )
   }
 
@@ -345,11 +360,13 @@ export class Response {
     status: int,
     body: string,
     headers: readonly HttpHeader[] = [],
+    compression: ResponseCompression = ResponseCompression.Default,
   ): Response {
     return Response.blob(
       status,
       encodeText(body),
       withDefaultContentType(headers, "text/html; charset=utf-8"),
+      compression,
     )
   }
 
@@ -357,11 +374,13 @@ export class Response {
     status: int,
     body: JsonValue,
     headers: readonly HttpHeader[] = [],
+    compression: ResponseCompression = ResponseCompression.Default,
   ): Response {
     return Response.blob(
       status,
       encodeText(formatJsonValue(body)),
       withDefaultContentType(headers, "application/json; charset=utf-8"),
+      compression,
     )
   }
 }
@@ -534,6 +553,169 @@ function hasHeader(headers: readonly HttpHeader[], name: string): bool {
     }
   }
   return false
+}
+
+function headerValue(headers: readonly HttpHeader[], name: string): string | null {
+  lowerName := name.toLowerCase()
+  for header of headers {
+    if header.name.toLowerCase() == lowerName {
+      return header.value
+    }
+  }
+  return null
+}
+
+function headerContainsTokenValue(value: string, token: string): bool {
+  lowerToken := token.toLowerCase()
+  let remaining = value
+  while true {
+    separator := remaining.indexOf(",")
+    let part = remaining
+    if separator >= 0 {
+      part = remaining.substring(0, separator)
+      remaining = remaining.slice(separator + 1)
+    } else {
+      remaining = ""
+    }
+    if part.trim().toLowerCase() == lowerToken {
+      return true
+    }
+    if remaining == "" {
+      break
+    }
+  }
+  return false
+}
+
+function acceptEncodingPartName(part: string): string {
+  separator := part.indexOf(";")
+  if separator < 0 {
+    return part.trim().toLowerCase()
+  }
+  return part.substring(0, separator).trim().toLowerCase()
+}
+
+function acceptEncodingPartAllows(part: string): bool {
+  parameters := part.split(";")
+  for index of 1..<parameters.length {
+    parameter := parameters[index].trim()
+    separator := parameter.indexOf("=")
+    if separator < 0 {
+      continue
+    }
+    if parameter.substring(0, separator).trim().toLowerCase() != "q" {
+      continue
+    }
+    quality := parameter.slice(separator + 1).trim()
+    if quality == "0" || quality == "0.0" || quality == "0.00" || quality == "0.000" {
+      return false
+    }
+  }
+  return true
+}
+
+function requestAcceptsEncoding(request: Request, encoding: string): bool {
+  lowerEncoding := encoding.toLowerCase()
+  let explicitRejected = false
+  let wildcardAccepted = false
+  for header of request.headers {
+    if header.name.toLowerCase() != "accept-encoding" {
+      continue
+    }
+
+    parts := header.value.split(",")
+    for part of parts {
+      name := acceptEncodingPartName(part)
+      allowed := acceptEncodingPartAllows(part)
+      if name == lowerEncoding {
+        if allowed {
+          return true
+        }
+        explicitRejected = true
+      } else if name == "*" && allowed {
+        wildcardAccepted = true
+      }
+    }
+  }
+  return !explicitRejected && wildcardAccepted
+}
+
+function isDefaultCompressible(headers: readonly HttpHeader[]): bool {
+  contentType := headerValue(headers, "Content-Type") else {
+    return false
+  }
+  lowerContentType := contentType.toLowerCase()
+  return lowerContentType.startsWith("text/") ||
+    lowerContentType.startsWith("application/json") ||
+    lowerContentType.startsWith("application/javascript") ||
+    lowerContentType.startsWith("application/xml") ||
+    lowerContentType.startsWith("image/svg+xml")
+}
+
+function shouldCompressResponse(request: Request, response: Response): bool {
+  if response.body.length == 0 {
+    return false
+  }
+  if hasHeader(response.headers, "Content-Encoding") {
+    return false
+  }
+  if !requestAcceptsEncoding(request, "gzip") {
+    return false
+  }
+
+  return case response.compression {
+    ResponseCompression.None -> false,
+    ResponseCompression.Compress -> true,
+    ResponseCompression.Default -> isDefaultCompressible(response.headers),
+  }
+}
+
+function withHeader(headers: readonly HttpHeader[], name: string, value: string): readonly HttpHeader[] {
+  merged: HttpHeader[] := []
+  for header of headers {
+    merged.push(header)
+  }
+  merged.push(HttpHeader {
+    name,
+    value,
+  })
+  return merged.buildReadonly()
+}
+
+function withVaryAcceptEncoding(headers: readonly HttpHeader[]): readonly HttpHeader[] {
+  vary := headerValue(headers, "Vary") else {
+    return withHeader(headers, "Vary", "Accept-Encoding")
+  }
+  if headerContainsTokenValue(vary, "Accept-Encoding") {
+    return headers
+  }
+
+  merged: HttpHeader[] := []
+  for header of headers {
+    if header.name.toLowerCase() == "vary" {
+      merged.push(HttpHeader {
+        name: header.name,
+        value: header.value + ", Accept-Encoding",
+      })
+    } else {
+      merged.push(header)
+    }
+  }
+  return merged.buildReadonly()
+}
+
+function responseForRequest(request: Request, response: Response): Response {
+  if !shouldCompressResponse(request, response) {
+    return response
+  }
+
+  headersWithEncoding := withHeader(response.headers, "Content-Encoding", "gzip")
+  return Response {
+    status: response.status,
+    headers: withVaryAcceptEncoding(headersWithEncoding),
+    body: gzip(response.body),
+    compression: response.compression,
+  }
 }
 
 function withDefaultContentType(

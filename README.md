@@ -38,6 +38,11 @@ function main(): int {
 ## Notes
 
 - `Request` and `Response` expose readonly data only.
+- `Response.compression` controls response compression. The default policy
+  compresses gzip-capable clients for common textual content types. Use
+  `ResponseCompression.None` to opt out or `ResponseCompression.Gzip` to request
+  gzip when the client advertises `Accept-Encoding: gzip`. Compression is
+  skipped when a response already has `Content-Encoding`.
 - `Request.isWebSocketUpgrade()` returns true for websocket upgrade attempts
   based on `Upgrade: websocket` and a `Connection` header containing the
   `upgrade` token.

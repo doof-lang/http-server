@@ -75,6 +75,13 @@ public:
         return response_;
     }
 
+    std::shared_ptr<std::vector<uint8_t>> waitBytes() {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+        return std::make_shared<std::vector<uint8_t>>(response_.begin(), response_.end());
+    }
+
 private:
     NativeHttpTestRequest(std::string host, int32_t port, std::string requestText)
         : host_(std::move(host)), port_(port), requestText_(std::move(requestText)) {}
