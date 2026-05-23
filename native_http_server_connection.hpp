@@ -259,35 +259,42 @@ public:
     }
 
     void onWritable() override {
+        bool writeFailed = false;
         while (true) {
-            std::shared_ptr<detail::ConnectionTransport> transport;
-            const uint8_t* data = nullptr;
-            size_t remaining = 0;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (closed_) {
                     return;
                 }
-                transport = transport_;
                 if (writeOffset_ >= writeBuffer_.size()) {
                     break;
                 }
-                data = writeBuffer_.data() + writeOffset_;
-                remaining = writeBuffer_.size() - writeOffset_;
-            }
 
-            const ssize_t written = transport->write(data, remaining);
-            if (written > 0) {
-                std::lock_guard<std::mutex> lock(mutex_);
+                auto transport = transport_;
+                if (!transport) {
+                    writeFailed = true;
+                    break;
+                }
+
+                const ssize_t written = transport->write(
+                    writeBuffer_.data() + writeOffset_,
+                    writeBuffer_.size() - writeOffset_
+                );
+                if (written < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    return;
+                }
+                if (written <= 0) {
+                    writeFailed = true;
+                    break;
+                }
                 writeOffset_ += static_cast<size_t>(written);
-                continue;
             }
-            if (written < 0 && errno == EINTR) {
-                continue;
-            }
-            if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                return;
-            }
+        }
+
+        if (writeFailed) {
             closeFromReactor();
             return;
         }

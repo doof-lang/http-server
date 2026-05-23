@@ -39,7 +39,7 @@ import class NativeWebSocketEvent from "./native_http_server.hpp" as doof_http_s
 }
 
 import class NativeWebSocketConnection from "./native_http_server.hpp" as doof_http_server::NativeWebSocketConnection {
-  static create(): NativeWebSocketConnection
+  static constructor(): NativeWebSocketConnection
   sendText(text: string): Result<void, string>
   sendBinary(bytes: readonly byte[]): Result<void, string>
   ping(): Result<void, string>

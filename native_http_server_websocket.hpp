@@ -70,7 +70,7 @@ public:
         const std::string& closeReason
     )>;
 
-    static std::shared_ptr<NativeWebSocketConnection> create() {
+    static std::shared_ptr<NativeWebSocketConnection> constructor() {
         return std::make_shared<NativeWebSocketConnection>();
     }
 
