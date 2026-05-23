@@ -1,6 +1,6 @@
 import { BlobBuilder, BlobReader } from "std/blob"
 import { AsyncEventChannel, AsyncEventChannelError } from "std/event"
-import { gzip } from "std/gzip"
+import { gzip, GzipStream } from "std/gzip"
 import { HttpHeader } from "std/http"
 import { formatJsonValue, parseJsonValue } from "std/json"
 
@@ -17,6 +17,9 @@ import class NativeExchange from "./native_http_server.hpp" as doof_http_server:
 
 import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
   respond(status: int, headersText: string, body: readonly byte[]): Result<void, string>
+  beginStreamResponse(status: int, headersText: string): Result<void, string>
+  writeStreamChunk(chunk: readonly byte[]): Result<void, string>
+  endStreamResponse(): Result<void, string>
   upgradeToWebSocket(
     websocket: NativeWebSocketConnection,
     headersText: string,
@@ -240,13 +243,10 @@ export class Request {
       }
     }
 
-    finalResponse := responseForRequest(this, response)
-
-    return mapNativeVoid(nativeResponder.respond(
-      finalResponse.status,
-      renderHeaders(finalResponse.headers),
-      finalResponse.body,
-    ))
+    return case response.body {
+      body: readonly byte[] -> respondWithBytes(nativeResponder, this, response, body),
+      body: Stream<readonly byte[]> -> respondWithStream(nativeResponder, this, response, body),
+    }
   }
 
   upgradeToWebSocket(connection: WebSocketConnection): void {
@@ -316,14 +316,14 @@ export class Request {
 export class Response {
   readonly status: int
   readonly headers: readonly HttpHeader[]
-  readonly body: readonly byte[]
+  readonly body: readonly byte[] | Stream<readonly byte[]>
   readonly compression: ResponseCompression = ResponseCompression.Default
 
   static empty(status: int = 204): Response {
     return Response {
       status,
       headers: readonly [],
-      body: readonly [],
+      body: emptyBytes(),
       compression: ResponseCompression.None,
     }
   }
@@ -331,6 +331,20 @@ export class Response {
   static blob(
     status: int,
     body: readonly byte[],
+    headers: readonly HttpHeader[] = [],
+    compression: ResponseCompression = ResponseCompression.Default,
+  ): Response {
+    return Response {
+      status,
+      headers,
+      body,
+      compression,
+    }
+  }
+
+  static stream(
+    status: int,
+    body: Stream<readonly byte[]>,
     headers: readonly HttpHeader[] = [],
     compression: ResponseCompression = ResponseCompression.Default,
   ): Response {
@@ -652,10 +666,25 @@ function isDefaultCompressible(headers: readonly HttpHeader[]): bool {
     lowerContentType.startsWith("image/svg+xml")
 }
 
-function shouldCompressResponse(request: Request, response: Response): bool {
-  if response.body.length == 0 {
+function shouldCompressByteResponse(request: Request, response: Response, body: readonly byte[]): bool {
+  if body.length == 0 {
     return false
   }
+  if hasHeader(response.headers, "Content-Encoding") {
+    return false
+  }
+  if !requestAcceptsEncoding(request, "gzip") {
+    return false
+  }
+
+  return case response.compression {
+    ResponseCompression.None -> false,
+    ResponseCompression.Compress -> true,
+    ResponseCompression.Default -> isDefaultCompressible(response.headers),
+  }
+}
+
+function shouldCompressStreamResponse(request: Request, response: Response): bool {
   if hasHeader(response.headers, "Content-Encoding") {
     return false
   }
@@ -704,18 +733,103 @@ function withVaryAcceptEncoding(headers: readonly HttpHeader[]): readonly HttpHe
   return merged.buildReadonly()
 }
 
-function responseForRequest(request: Request, response: Response): Response {
-  if !shouldCompressResponse(request, response) {
-    return response
+class ByteResponse {
+  readonly status: int
+  readonly headers: readonly HttpHeader[]
+  readonly body: readonly byte[]
+}
+
+class StreamResponse {
+  readonly status: int
+  readonly headers: readonly HttpHeader[]
+  readonly body: Stream<readonly byte[]>
+}
+
+function byteResponseForRequest(request: Request, response: Response, body: readonly byte[]): ByteResponse {
+  if !shouldCompressByteResponse(request, response, body) {
+    return ByteResponse {
+      status: response.status,
+      headers: response.headers,
+      body,
+    }
   }
 
   headersWithEncoding := withHeader(response.headers, "Content-Encoding", "gzip")
-  return Response {
+  return ByteResponse {
     status: response.status,
     headers: withVaryAcceptEncoding(headersWithEncoding),
-    body: gzip(response.body),
-    compression: response.compression,
+    body: gzip(body),
   }
+}
+
+function streamResponseForRequest(
+  request: Request,
+  response: Response,
+  body: Stream<readonly byte[]>,
+): StreamResponse {
+  if !shouldCompressStreamResponse(request, response) {
+    return StreamResponse {
+      status: response.status,
+      headers: response.headers,
+      body,
+    }
+  }
+
+  headersWithEncoding := withHeader(response.headers, "Content-Encoding", "gzip")
+  return StreamResponse {
+    status: response.status,
+    headers: withVaryAcceptEncoding(headersWithEncoding),
+    body: GzipStream(body),
+  }
+}
+
+function respondWithBytes(
+  nativeResponder: NativeResponder,
+  request: Request,
+  response: Response,
+  body: readonly byte[],
+): Result<void, ServerError> {
+  finalResponse := byteResponseForRequest(request, response, body)
+  return mapNativeVoid(nativeResponder.respond(
+    finalResponse.status,
+    renderHeaders(finalResponse.headers),
+    finalResponse.body,
+  ))
+}
+
+function respondWithStream(
+  nativeResponder: NativeResponder,
+  request: Request,
+  response: Response,
+  body: Stream<readonly byte[]>,
+): Result<void, ServerError> {
+  finalResponse := streamResponseForRequest(request, response, body)
+
+  started := mapNativeVoid(nativeResponder.beginStreamResponse(
+    finalResponse.status,
+    renderHeaders(finalResponse.headers),
+  ))
+  case started {
+    _: Success -> {}
+    f: Failure -> return Failure {
+      error: f.error
+    }
+  }
+
+  for chunk of finalResponse.body {
+    if chunk.length == 0 {
+      continue
+    }
+    written := mapNativeVoid(nativeResponder.writeStreamChunk(chunk))
+    case written {
+      _: Success -> {}
+      f: Failure -> return Failure {
+        error: f.error
+      }
+    }
+  }
+
+  return mapNativeVoid(nativeResponder.endStreamResponse())
 }
 
 function withDefaultContentType(
@@ -740,6 +854,11 @@ function withDefaultContentType(
 function encodeText(text: string): readonly byte[] {
   builder := BlobBuilder()
   builder.writeString(text)
+  return builder.build()
+}
+
+function emptyBytes(): readonly byte[] {
+  builder := BlobBuilder()
   return builder.build()
 }
 

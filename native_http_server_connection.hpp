@@ -63,6 +63,68 @@ public:
         return doof::Result<void, std::string>::success();
     }
 
+    doof::Result<void, std::string> enqueueStreamResponseHead(
+        int32_t status,
+        const std::string& headersText,
+        bool requestKeepAlive
+    ) {
+        const bool keepAlive = requestKeepAlive && !detail::responseRequestsClose(headersText);
+        auto bytes = detail::chunkedResponseHeadBytes(status, headersText, keepAlive);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || closeAfterWrite_) {
+                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+            }
+            streamingResponse_ = true;
+            streamResponseKeepAlive_ = keepAlive;
+            writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+        }
+
+        const auto self = shared_from_this();
+        if (!reactor_->post([self] {
+            self->armWriteInterest();
+        })) {
+            closeFromServer();
+            return doof::Result<void, std::string>::failure("closed|server is no longer accepting work");
+        }
+        return doof::Result<void, std::string>::success();
+    }
+
+    doof::Result<void, std::string> enqueueStreamResponseChunk(
+        const std::shared_ptr<std::vector<uint8_t>>& chunk
+    ) {
+        auto bytes = detail::chunkedResponseChunkBytes(chunk);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || !streamingResponse_ || closeAfterWrite_) {
+                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+            }
+            if (!bytes.empty()) {
+                writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+            }
+        }
+
+        if (!bytes.empty()) {
+            armWriteInterest();
+        }
+        return doof::Result<void, std::string>::success();
+    }
+
+    doof::Result<void, std::string> enqueueStreamResponseEnd() {
+        auto bytes = detail::chunkedResponseEndBytes();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || !streamingResponse_ || closeAfterWrite_) {
+                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+            }
+            writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+            streamingResponse_ = false;
+            closeAfterWrite_ = closeAfterWrite_ || !streamResponseKeepAlive_;
+        }
+        armWriteInterest();
+        return doof::Result<void, std::string>::success();
+    }
+
     doof::Result<void, std::string> enqueueWebSocketUpgrade(
         const detail::ParsedRequest& request,
         std::shared_ptr<NativeWebSocketConnection> websocket,
@@ -239,7 +301,7 @@ public:
             writeBuffer_.clear();
             writeOffset_ = 0;
             shouldClose = closeAfterWrite_;
-            if (!shouldClose && !websocketMode_) {
+            if (!shouldClose && !websocketMode_ && !streamingResponse_) {
                 awaitingResponse_ = false;
                 lastActivityAt_ = std::chrono::steady_clock::now();
             } else if (!shouldClose) {
@@ -277,7 +339,7 @@ public:
             );
             if (websocketMode_) {
                 shouldClose = false;
-            } else if (awaitingResponse_) {
+            } else if (awaitingResponse_ && !streamingResponse_) {
                 shouldTimeoutResponse = responseTimeoutMillis_ > 0 &&
                     idleFor.count() >= responseTimeoutMillis_;
             } else {
@@ -487,6 +549,8 @@ private:
     bool closed_ = false;
     bool awaitingResponse_ = false;
     bool websocketMode_ = false;
+    bool streamingResponse_ = false;
+    bool streamResponseKeepAlive_ = false;
     bool websocketCloseEmitted_ = false;
     bool closeAfterWrite_ = false;
     int64_t maxBodyBytes_;
@@ -528,6 +592,85 @@ inline doof::Result<void, std::string> NativeResponder::respond(
     auto result = connection->enqueueResponse(status, headersText, body, request_.keepAlive);
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        responseWritten_ = result.isSuccess();
+        connection_.reset();
+    }
+    return result;
+}
+
+inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
+    int32_t status,
+    const std::string& headersText
+) {
+    std::shared_ptr<NativeConnection> connection;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (completed_) {
+            return doof::Result<void, std::string>::failure(
+                responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"
+            );
+        }
+        completed_ = true;
+        streamingResponse_ = true;
+        connection = connection_;
+    }
+
+    if (!connection) {
+        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+    }
+
+    auto result = connection->enqueueStreamResponseHead(status, headersText, request_.keepAlive);
+    if (result.isFailure()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        streamingResponse_ = false;
+        connection_.reset();
+    }
+    return result;
+}
+
+inline doof::Result<void, std::string> NativeResponder::writeStreamChunk(
+    const std::shared_ptr<std::vector<uint8_t>>& chunk
+) {
+    std::shared_ptr<NativeConnection> connection;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!streamingResponse_) {
+            return doof::Result<void, std::string>::failure(
+                responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"
+            );
+        }
+        connection = connection_;
+    }
+
+    if (!connection) {
+        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+    }
+    return connection->enqueueStreamResponseChunk(chunk);
+}
+
+inline doof::Result<void, std::string> NativeResponder::endStreamResponse() {
+    std::shared_ptr<NativeConnection> connection;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!streamingResponse_) {
+            return doof::Result<void, std::string>::failure(
+                responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"
+            );
+        }
+        connection = connection_;
+    }
+
+    if (!connection) {
+        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+    }
+
+    auto result = connection->enqueueStreamResponseEnd();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        streamingResponse_ = false;
         responseWritten_ = result.isSuccess();
         connection_.reset();
     }

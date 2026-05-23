@@ -17,6 +17,17 @@ public:
         const std::shared_ptr<std::vector<uint8_t>>& body
     );
 
+    doof::Result<void, std::string> beginStreamResponse(
+        int32_t status,
+        const std::string& headersText
+    );
+
+    doof::Result<void, std::string> writeStreamChunk(
+        const std::shared_ptr<std::vector<uint8_t>>& chunk
+    );
+
+    doof::Result<void, std::string> endStreamResponse();
+
     void upgradeToWebSocket(
         std::shared_ptr<NativeWebSocketConnection> websocket,
         const std::string& headersText,
@@ -29,6 +40,7 @@ private:
     std::shared_ptr<NativeConnection> connection_;
     detail::ParsedRequest request_;
     bool completed_ = false;
+    bool streamingResponse_ = false;
     bool responseWritten_ = false;
 };
 

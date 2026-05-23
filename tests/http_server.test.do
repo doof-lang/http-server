@@ -61,6 +61,7 @@ class KeepAliveState {
 
 class SingleResponseState {
   count: int = 0
+  secondKind: string = ""
 }
 
 class WebSocketTestState {
@@ -76,6 +77,29 @@ class ParserCase {
   name: string = ""
   requestText: string = ""
   expectedPrefix: string = ""
+}
+
+class TestByteStream implements Stream<readonly byte[]> {
+  chunks: string[]
+  index: int = 0
+  currentValue: readonly byte[] = []
+
+  next(): bool {
+    if this.index >= this.chunks.length {
+      return false
+    }
+    this.currentValue = encodeTestText(this.chunks[this.index])
+    this.index += 1
+    return true
+  }
+
+  value(): readonly byte[] => this.currentValue
+}
+
+function encodeTestText(text: string): readonly byte[] {
+  builder := BlobBuilder()
+  builder.writeString(text)
+  return builder.build()
 }
 
 function handleDispatch(
@@ -168,6 +192,149 @@ function handleDefaultTextResponse(
   try! request.respond(Response.text(
     200,
     "default compression\nactual response\n",
+  ))
+  try! requestChannel.close()
+}
+
+function handleStreamResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response.stream(
+    200,
+    TestByteStream {
+      chunks: [
+        "hello",
+        "",
+        "world",
+      ],
+    },
+    readonly [HttpHeader {
+      name: "Content-Type",
+      value: "text/plain; charset=utf-8",
+    }],
+    ResponseCompression.None,
+  ))
+  try! requestChannel.close()
+}
+
+function handleStreamCloseResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response.stream(
+    200,
+    TestByteStream {
+      chunks: [
+        "bye",
+      ],
+    },
+    readonly [HttpHeader {
+      name: "Connection",
+      value: "close",
+    }],
+    ResponseCompression.None,
+  ))
+  try! requestChannel.close()
+}
+
+function handleKeepAliveStream(
+  state: KeepAliveState,
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  state.count += 1
+  if state.count == 1 {
+    state.firstPath = request.path
+    try! request.respond(Response.stream(
+      200,
+      TestByteStream {
+        chunks: [
+          "first",
+          " response\n",
+        ],
+      },
+      readonly [],
+      ResponseCompression.None,
+    ))
+    return
+  }
+
+  state.secondPath = request.path
+  try! request.respond(Response.text(200, "second\n"))
+  try! requestChannel.close()
+}
+
+function handleStreamOneShot(
+  state: SingleResponseState,
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  state.count += 1
+  try! request.respond(Response.stream(
+    200,
+    TestByteStream {
+      chunks: [
+        "done",
+      ],
+    },
+    readonly [],
+    ResponseCompression.None,
+  ))
+  second := request.respond(Response.text(200, "too late"))
+  case second {
+    _: Success -> Assert.fail("expected second response to fail")
+    f: Failure -> {
+      state.secondKind = f.error.kind
+    }
+  }
+  try! requestChannel.close()
+}
+
+function handleGzipStreamResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response.stream(
+    200,
+    TestByteStream {
+      chunks: [
+        "compress me\n",
+        "compress me\n",
+        "compress me\n",
+      ],
+    },
+    readonly [HttpHeader {
+      name: "Content-Type",
+      value: "text/plain; charset=utf-8",
+    }],
+    ResponseCompression.Compress,
+  ))
+  try! requestChannel.close()
+}
+
+function handleEncodedStreamResponse(
+  requestChannel: AsyncEventChannel<Request>,
+  request: Request,
+): void {
+  try! request.respond(Response.stream(
+    200,
+    TestByteStream {
+      chunks: [
+        "already encoded\n",
+      ],
+    },
+    readonly [
+      HttpHeader {
+        name: "Content-Type",
+        value: "text/plain; charset=utf-8",
+      },
+      HttpHeader {
+        name: "Content-Encoding",
+        value: "identity",
+      },
+    ],
+    ResponseCompression.Compress,
   ))
   try! requestChannel.close()
 }
@@ -275,6 +442,17 @@ function assertParserCases(cases: ParserCase[]): void {
       "${entry.name}: expected ${entry.expectedPrefix}, got ${actual}",
     )
   }
+}
+
+function firstChunkPayloadOffset(responseBytes: readonly byte[], bodyStart: int): int {
+  let cursor = bodyStart
+  while cursor + 1 < responseBytes.length {
+    if responseBytes[cursor] == byte(13) && responseBytes[cursor + 1] == byte(10) {
+      return cursor + 2
+    }
+    cursor += 1
+  }
+  return -1
 }
 
 export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
@@ -451,6 +629,226 @@ export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): void 
 
   Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
   Assert.isTrue(response.contains("compress me\ncompress me\ncompress me\n"), response)
+}
+
+export function testStreamedResponseUsesChunkedTransferEncoding(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleStreamResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
+  Assert.isTrue(response.contains("Transfer-Encoding: chunked"), response)
+  Assert.isFalse(response.contains("Content-Length:"), response)
+  Assert.isTrue(response.contains("\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n"), response)
+}
+
+export function testStreamedResponseConnectionCloseClosesAfterFinalChunk(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleStreamCloseResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isTrue(response.contains("Connection: close"), response)
+  Assert.isTrue(response.contains("\r\n3\r\nbye\r\n0\r\n\r\n"), response)
+}
+
+export function testStreamedKeepAliveResponseAllowsFollowingRequestAfterFinalChunk(): void {
+  state := KeepAliveState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleKeepAliveStream(state, requestChannel!, request),
+    capacity: 4,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET /first HTTP/1.1\r\nHost: example.test\r\n\r\nGET /second HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.count, 2)
+  Assert.equal(state.firstPath, "/first")
+  Assert.equal(state.secondPath, "/second")
+  Assert.isTrue(response.contains("Transfer-Encoding: chunked"), response)
+  Assert.isTrue(response.contains("\r\n5\r\nfirst\r\na\r\n response\n\r\n0\r\n\r\nHTTP/1.1 200 OK"), response)
+  Assert.isTrue(response.contains("second\n"), response)
+}
+
+export function testStreamedResponseResponderIsOneShot(): void {
+  state := SingleResponseState()
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleStreamOneShot(state, requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.equal(state.secondKind, "already-responded")
+  Assert.isTrue(response.contains("\r\n4\r\ndone\r\n0\r\n\r\n"), response)
+}
+
+export function testStreamedGzipResponseNegotiatesAcceptEncoding(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleGzipStreamResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  responseBytes := client.waitBytes()
+  try! server.close()
+
+  bodyStart := response.indexOf("\r\n\r\n") + 4
+  payloadStart := firstChunkPayloadOffset(responseBytes, bodyStart)
+  Assert.isTrue(response.contains("Transfer-Encoding: chunked"), response)
+  Assert.isTrue(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
+  Assert.isTrue(payloadStart >= 0, "expected chunk payload offset")
+  Assert.equal(responseBytes[payloadStart], byte(31))
+  Assert.equal(responseBytes[payloadStart + 1], byte(139))
+  Assert.equal(responseBytes[payloadStart + 2], byte(8))
+}
+
+export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleGzipStreamResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("compress me\n"), response)
+}
+
+export function testStreamedGzipResponseSkipsWhenContentEncodingIsPresent(): void {
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => handleEncodedStreamResponse(requestChannel!, request),
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  try! server.close()
+
+  Assert.isTrue(response.contains("Content-Encoding: identity"), response)
+  Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
+  Assert.isTrue(response.contains("already encoded\n"), response)
 }
 
 export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {

@@ -40,9 +40,14 @@ function main(): int {
 - `Request` and `Response` expose readonly data only.
 - `Response.compression` controls response compression. The default policy
   compresses gzip-capable clients for common textual content types. Use
-  `ResponseCompression.None` to opt out or `ResponseCompression.Gzip` to request
+  `ResponseCompression.None` to opt out or `ResponseCompression.Compress` to request
   gzip when the client advertises `Accept-Encoding: gzip`. Compression is
   skipped when a response already has `Content-Encoding`.
+- `Response.stream(status, chunks, headers, compression)` sends a
+  `Stream<readonly byte[]>` response with HTTP/1.1 chunked transfer encoding.
+  Streamed responses omit `Content-Length`, ignore empty chunks, and preserve
+  keep-alive behavior after the final chunk. Gzip compression is applied as an
+  incremental stream when negotiated.
 - `Request.isWebSocketUpgrade()` returns true for websocket upgrade attempts
   based on `Upgrade: websocket` and a `Connection` header containing the
   `upgrade` token.
@@ -72,7 +77,7 @@ function main(): int {
   positive value to close a connection after that many completed requests.
 - The internal reactor has an explicit platform seam. macOS uses `kqueue`;
   other POSIX platforms use a portable `poll` fallback.
-- The first implementation does not yet support streaming request or response
-  bodies, WebSocket compression extensions, or concurrent HTTP/1.1 pipeline
-  handling. Requests with unsupported `Transfer-Encoding` values are rejected
-  with `501 Not Implemented` before dispatch.
+- The first implementation does not yet support streaming request bodies,
+  WebSocket compression extensions, or concurrent HTTP/1.1 pipeline handling.
+  Requests with unsupported `Transfer-Encoding` values are rejected with
+  `501 Not Implemented` before dispatch.
