@@ -12,26 +12,27 @@ public:
         : connection_(std::move(connection)), request_(std::move(request)) {}
 
     doof::Result<void, std::string> respond(
-        int32_t status,
-        const std::string& headersText,
-        const std::shared_ptr<std::vector<uint8_t>>& body
+        const std::string& responseText,
+        const std::shared_ptr<std::vector<uint8_t>>& body,
+        bool keepAlive
     );
 
     doof::Result<void, std::string> beginStreamResponse(
-        int32_t status,
-        const std::string& headersText
+        const std::string& responseText,
+        bool keepAlive
     );
 
-    doof::Result<void, std::string> writeStreamChunk(
-        const std::shared_ptr<std::vector<uint8_t>>& chunk
+    doof::Result<void, std::string> writeStreamBytes(
+        const std::shared_ptr<std::vector<uint8_t>>& bytes
     );
 
-    doof::Result<void, std::string> endStreamResponse();
+    doof::Result<void, std::string> endStreamResponse(
+        const std::shared_ptr<std::vector<uint8_t>>& bytes
+    );
 
     void upgradeToWebSocket(
         std::shared_ptr<NativeWebSocketConnection> websocket,
-        const std::string& headersText,
-        const std::string& subprotocol,
+        const std::string& responseText,
         NativeWebSocketConnection::EventCallback callback
     );
 
@@ -54,6 +55,7 @@ public:
     std::string version() const { return request_.version; }
     std::string headersText() const { return request_.headersText; }
     std::shared_ptr<std::vector<uint8_t>> body() const { return request_.body; }
+    bool keepAlive() const { return request_.keepAlive; }
     std::shared_ptr<NativeResponder> responder() const { return responder_; }
 
 private:

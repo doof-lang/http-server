@@ -255,78 +255,6 @@ inline bool requestShouldKeepAlive(
     return false;
 }
 
-inline bool responseRequestsClose(const std::string& headersText) {
-    std::istringstream lines(headersText);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        const size_t separator = line.find(':');
-        if (separator == std::string::npos || separator == 0) {
-            continue;
-        }
-        if (toLower(line.substr(0, separator)) == "connection" &&
-            headerValueHasToken(trim(line.substr(separator + 1)), "close")) {
-            return true;
-        }
-    }
-    return false;
-}
-
-inline std::string normalizedResponseHeaders(
-    const std::string& headersText,
-    size_t bodySize,
-    bool keepAlive
-) {
-    std::string normalized;
-    std::istringstream lines(headersText);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        const size_t separator = line.find(':');
-        if (separator == std::string::npos || separator == 0) {
-            continue;
-        }
-        const std::string lowerName = toLower(line.substr(0, separator));
-        if (lowerName == "content-length" || lowerName == "connection") {
-            continue;
-        }
-        normalized += line + "\r\n";
-    }
-    normalized += "Content-Length: " + std::to_string(bodySize) + "\r\n";
-    normalized += std::string("Connection: ") + (keepAlive ? "keep-alive" : "close") + "\r\n";
-    return normalized;
-}
-
-inline std::string normalizedChunkedResponseHeaders(
-    const std::string& headersText,
-    bool keepAlive
-) {
-    std::string normalized;
-    std::istringstream lines(headersText);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        const size_t separator = line.find(':');
-        if (separator == std::string::npos || separator == 0) {
-            continue;
-        }
-        const std::string lowerName = toLower(line.substr(0, separator));
-        if (lowerName == "content-length" || lowerName == "connection" || lowerName == "transfer-encoding") {
-            continue;
-        }
-        normalized += line + "\r\n";
-    }
-    normalized += "Transfer-Encoding: chunked\r\n";
-    normalized += std::string("Connection: ") + (keepAlive ? "keep-alive" : "close") + "\r\n";
-    return normalized;
-}
-
 enum class ParseStatus {
     NeedMore,
     Complete,
@@ -565,67 +493,18 @@ inline ParseAttempt parseRequest(std::string& buffered, int64_t maxBodyBytes) {
     return ParseAttempt { ParseStatus::Complete, std::move(parsed), "" };
 }
 
-inline std::vector<uint8_t> responseBytes(
-    int32_t status,
-    const std::string& headersText,
-    const std::shared_ptr<std::vector<uint8_t>>& body,
-    bool keepAlive
-) {
-    const auto safeBody = body ? body : std::make_shared<std::vector<uint8_t>>();
-    const std::string head =
-        "HTTP/1.1 " + std::to_string(status) + " " + statusText(status) + "\r\n" +
-        normalizedResponseHeaders(headersText, safeBody->size(), keepAlive) +
-        "\r\n";
-    std::vector<uint8_t> bytes;
-    bytes.reserve(head.size() + safeBody->size());
-    bytes.insert(bytes.end(), head.begin(), head.end());
-    bytes.insert(bytes.end(), safeBody->begin(), safeBody->end());
-    return bytes;
-}
-
-inline std::vector<uint8_t> chunkedResponseHeadBytes(
-    int32_t status,
-    const std::string& headersText,
-    bool keepAlive
-) {
-    const std::string head =
-        "HTTP/1.1 " + std::to_string(status) + " " + statusText(status) + "\r\n" +
-        normalizedChunkedResponseHeaders(headersText, keepAlive) +
-        "\r\n";
-    return std::vector<uint8_t>(head.begin(), head.end());
-}
-
-inline std::vector<uint8_t> chunkedResponseChunkBytes(
-    const std::shared_ptr<std::vector<uint8_t>>& chunk
-) {
-    if (!chunk || chunk->empty()) {
-        return {};
-    }
-
-    std::ostringstream size;
-    size << std::hex << chunk->size();
-    std::string prefix = size.str() + "\r\n";
-    std::vector<uint8_t> bytes;
-    bytes.reserve(prefix.size() + chunk->size() + 2);
-    bytes.insert(bytes.end(), prefix.begin(), prefix.end());
-    bytes.insert(bytes.end(), chunk->begin(), chunk->end());
-    bytes.push_back(static_cast<uint8_t>('\r'));
-    bytes.push_back(static_cast<uint8_t>('\n'));
-    return bytes;
-}
-
-inline std::vector<uint8_t> chunkedResponseEndBytes() {
-    const std::string end = "0\r\n\r\n";
-    return std::vector<uint8_t>(end.begin(), end.end());
-}
-
 inline std::vector<uint8_t> simpleResponseBytes(int32_t status, const std::string& body) {
-    return responseBytes(
-        status,
-        "Content-Type: text/plain; charset=utf-8\r\n",
-        std::make_shared<std::vector<uint8_t>>(body.begin(), body.end()),
-        false
-    );
+    const std::string head =
+        "HTTP/1.1 " + std::to_string(status) + " " + statusText(status) + "\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    std::vector<uint8_t> bytes;
+    bytes.reserve(head.size() + body.size());
+    bytes.insert(bytes.end(), head.begin(), head.end());
+    bytes.insert(bytes.end(), body.begin(), body.end());
+    return bytes;
 }
 
 }  // namespace detail

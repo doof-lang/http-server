@@ -37,13 +37,15 @@ public:
     }
 
     doof::Result<void, std::string> enqueueResponse(
-        int32_t status,
-        const std::string& headersText,
+        const std::string& responseText,
         const std::shared_ptr<std::vector<uint8_t>>& body,
-        bool requestKeepAlive
+        bool keepAlive
     ) {
-        const bool keepAlive = requestKeepAlive && !detail::responseRequestsClose(headersText);
-        auto bytes = detail::responseBytes(status, headersText, body, keepAlive);
+        const auto safeBody = body ? body : std::make_shared<std::vector<uint8_t>>();
+        std::vector<uint8_t> bytes;
+        bytes.reserve(responseText.size() + safeBody->size());
+        bytes.insert(bytes.end(), responseText.begin(), responseText.end());
+        bytes.insert(bytes.end(), safeBody->begin(), safeBody->end());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_) {
@@ -64,12 +66,10 @@ public:
     }
 
     doof::Result<void, std::string> enqueueStreamResponseHead(
-        int32_t status,
-        const std::string& headersText,
-        bool requestKeepAlive
+        const std::string& responseText,
+        bool keepAlive
     ) {
-        const bool keepAlive = requestKeepAlive && !detail::responseRequestsClose(headersText);
-        auto bytes = detail::chunkedResponseHeadBytes(status, headersText, keepAlive);
+        auto bytes = std::vector<uint8_t>(responseText.begin(), responseText.end());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_) {
@@ -90,34 +90,36 @@ public:
         return doof::Result<void, std::string>::success();
     }
 
-    doof::Result<void, std::string> enqueueStreamResponseChunk(
-        const std::shared_ptr<std::vector<uint8_t>>& chunk
+    doof::Result<void, std::string> enqueueStreamResponseBytes(
+        const std::shared_ptr<std::vector<uint8_t>>& bytes
     ) {
-        auto bytes = detail::chunkedResponseChunkBytes(chunk);
+        auto safeBytes = bytes ? bytes : std::make_shared<std::vector<uint8_t>>();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !streamingResponse_ || closeAfterWrite_) {
                 return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
             }
-            if (!bytes.empty()) {
-                writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+            if (!safeBytes->empty()) {
+                writeBuffer_.insert(writeBuffer_.end(), safeBytes->begin(), safeBytes->end());
             }
         }
 
-        if (!bytes.empty()) {
+        if (!safeBytes->empty()) {
             armWriteInterest();
         }
         return doof::Result<void, std::string>::success();
     }
 
-    doof::Result<void, std::string> enqueueStreamResponseEnd() {
-        auto bytes = detail::chunkedResponseEndBytes();
+    doof::Result<void, std::string> enqueueStreamResponseEnd(
+        const std::shared_ptr<std::vector<uint8_t>>& bytes
+    ) {
+        auto safeBytes = bytes ? bytes : std::make_shared<std::vector<uint8_t>>();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !streamingResponse_ || closeAfterWrite_) {
                 return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
             }
-            writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+            writeBuffer_.insert(writeBuffer_.end(), safeBytes->begin(), safeBytes->end());
             streamingResponse_ = false;
             closeAfterWrite_ = closeAfterWrite_ || !streamResponseKeepAlive_;
         }
@@ -126,21 +128,14 @@ public:
     }
 
     doof::Result<void, std::string> enqueueWebSocketUpgrade(
-        const detail::ParsedRequest& request,
         std::shared_ptr<NativeWebSocketConnection> websocket,
-        const std::string& headersText,
-        const std::string& subprotocol
+        const std::string& responseText
     ) {
         if (!websocket) {
             return doof::Result<void, std::string>::failure("websocket|missing websocket connection");
         }
-        auto accept = detail::validateWebSocketHandshake(request);
-        if (accept.isFailure()) {
-            enqueueImmediateClose(detail::simpleResponseBytes(400, "Bad Request\n"));
-            return doof::Result<void, std::string>::failure(accept.error());
-        }
 
-        auto bytes = detail::websocketHandshakeBytes(accept.value(), headersText, subprotocol);
+        auto bytes = std::vector<uint8_t>(responseText.begin(), responseText.end());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_ || websocketMode_) {
@@ -575,9 +570,9 @@ private:
 };
 
 inline doof::Result<void, std::string> NativeResponder::respond(
-    int32_t status,
-    const std::string& headersText,
-    const std::shared_ptr<std::vector<uint8_t>>& body
+    const std::string& responseText,
+    const std::shared_ptr<std::vector<uint8_t>>& body,
+    bool keepAlive
 ) {
     std::shared_ptr<NativeConnection> connection;
     {
@@ -596,7 +591,7 @@ inline doof::Result<void, std::string> NativeResponder::respond(
         return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
     }
 
-    auto result = connection->enqueueResponse(status, headersText, body, request_.keepAlive);
+    auto result = connection->enqueueResponse(responseText, body, keepAlive);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         responseWritten_ = result.isSuccess();
@@ -606,8 +601,8 @@ inline doof::Result<void, std::string> NativeResponder::respond(
 }
 
 inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
-    int32_t status,
-    const std::string& headersText
+    const std::string& responseText,
+    bool keepAlive
 ) {
     std::shared_ptr<NativeConnection> connection;
     {
@@ -627,7 +622,7 @@ inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
         return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
     }
 
-    auto result = connection->enqueueStreamResponseHead(status, headersText, request_.keepAlive);
+    auto result = connection->enqueueStreamResponseHead(responseText, keepAlive);
     if (result.isFailure()) {
         std::lock_guard<std::mutex> lock(mutex_);
         streamingResponse_ = false;
@@ -636,8 +631,8 @@ inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
     return result;
 }
 
-inline doof::Result<void, std::string> NativeResponder::writeStreamChunk(
-    const std::shared_ptr<std::vector<uint8_t>>& chunk
+inline doof::Result<void, std::string> NativeResponder::writeStreamBytes(
+    const std::shared_ptr<std::vector<uint8_t>>& bytes
 ) {
     std::shared_ptr<NativeConnection> connection;
     {
@@ -654,10 +649,12 @@ inline doof::Result<void, std::string> NativeResponder::writeStreamChunk(
     if (!connection) {
         return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
     }
-    return connection->enqueueStreamResponseChunk(chunk);
+    return connection->enqueueStreamResponseBytes(bytes);
 }
 
-inline doof::Result<void, std::string> NativeResponder::endStreamResponse() {
+inline doof::Result<void, std::string> NativeResponder::endStreamResponse(
+    const std::shared_ptr<std::vector<uint8_t>>& bytes
+) {
     std::shared_ptr<NativeConnection> connection;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -674,7 +671,7 @@ inline doof::Result<void, std::string> NativeResponder::endStreamResponse() {
         return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
     }
 
-    auto result = connection->enqueueStreamResponseEnd();
+    auto result = connection->enqueueStreamResponseEnd(bytes);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         streamingResponse_ = false;
@@ -686,8 +683,7 @@ inline doof::Result<void, std::string> NativeResponder::endStreamResponse() {
 
 inline void NativeResponder::upgradeToWebSocket(
     std::shared_ptr<NativeWebSocketConnection> websocket,
-    const std::string& headersText,
-    const std::string& subprotocol,
+    const std::string& responseText,
     NativeWebSocketConnection::EventCallback callback
 ) {
     if (websocket) {
@@ -695,7 +691,6 @@ inline void NativeResponder::upgradeToWebSocket(
     }
 
     std::shared_ptr<NativeConnection> connection;
-    detail::ParsedRequest request;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (completed_) {
@@ -709,7 +704,6 @@ inline void NativeResponder::upgradeToWebSocket(
         }
         completed_ = true;
         connection = connection_;
-        request = request_;
     }
 
     if (!connection) {
@@ -719,7 +713,7 @@ inline void NativeResponder::upgradeToWebSocket(
         return;
     }
 
-    auto result = connection->enqueueWebSocketUpgrade(request, websocket, headersText, subprotocol);
+    auto result = connection->enqueueWebSocketUpgrade(websocket, responseText);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         responseWritten_ = result.isSuccess();

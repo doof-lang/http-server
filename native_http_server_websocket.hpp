@@ -2,7 +2,6 @@
 
 #include "native_http_server_protocol.hpp"
 #include "native_http_server_websocket_frames.hpp"
-#include "websocket_internal.hpp"
 
 namespace doof_http_server {
 
@@ -89,18 +88,9 @@ public:
         return static_cast<int32_t>(state_);
     }
 
-    doof::Result<void, std::string> sendText(const std::string& text) {
-        auto payload = std::make_shared<std::vector<uint8_t>>(text.begin(), text.end());
-        return send(0x1, payload, 0, "");
-    }
-
-    doof::Result<void, std::string> sendBinary(const std::shared_ptr<std::vector<uint8_t>>& bytes) {
-        return send(0x2, bytes ? bytes : std::make_shared<std::vector<uint8_t>>(), 0, "");
-    }
-
-    doof::Result<void, std::string> ping() {
-        return send(0x9, std::make_shared<std::vector<uint8_t>>(), 0, "");
-    }
+    doof::Result<void, std::string> sendText(std::string text);
+    doof::Result<void, std::string> sendBinary(std::shared_ptr<std::vector<uint8_t>> bytes);
+    doof::Result<void, std::string> ping();
 
     doof::Result<void, std::string> close(int32_t code, const std::string& reason) {
         {
@@ -110,7 +100,27 @@ public:
             }
             state_ = NativeWebSocketState::Closing;
         }
-        return send(0x8, std::make_shared<std::vector<uint8_t>>(), code, reason);
+        return sendRaw(0x8, std::make_shared<std::vector<uint8_t>>(), code, reason);
+    }
+
+    doof::Result<void, std::string> sendRaw(
+        int32_t opcode,
+        const std::shared_ptr<std::vector<uint8_t>>& payload,
+        int32_t closeCode,
+        const std::string& closeReason
+    ) {
+        Sender sender;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!sender_) {
+                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
+            }
+            if (state_ != NativeWebSocketState::Open && !(opcode == 0x8 && state_ == NativeWebSocketState::Closing)) {
+                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
+            }
+            sender = sender_;
+        }
+        return sender(opcode, payload ? payload : std::make_shared<std::vector<uint8_t>>(), closeCode, closeReason);
     }
 
     void markOpen() {
@@ -141,26 +151,6 @@ public:
     }
 
 private:
-    doof::Result<void, std::string> send(
-        int32_t opcode,
-        const std::shared_ptr<std::vector<uint8_t>>& payload,
-        int32_t closeCode,
-        const std::string& closeReason
-    ) {
-        Sender sender;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!sender_) {
-                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
-            }
-            if (state_ != NativeWebSocketState::Open && !(opcode == 0x8 && state_ == NativeWebSocketState::Closing)) {
-                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
-            }
-            sender = sender_;
-        }
-        return sender(opcode, payload, closeCode, closeReason);
-    }
-
     void setState(NativeWebSocketState state) {
         std::lock_guard<std::mutex> lock(mutex_);
         state_ = state;
@@ -199,37 +189,4 @@ private:
     Sender sender_;
 };
 
-namespace detail {
-
-inline doof::Result<std::string, std::string> validateWebSocketHandshake(const ParsedRequest& request) {
-    auto accept = std_::http_server::websocket_internal::validateWebSocketHandshake(
-        request.method,
-        request.version,
-        request.headersText
-    );
-    if (accept.isFailure()) {
-        return doof::Result<std::string, std::string>::failure(accept.error());
-    }
-    return doof::Result<std::string, std::string>::success(accept.value());
-}
-
-inline std::vector<uint8_t> websocketHandshakeBytes(
-    const std::string& accept,
-    const std::string& extraHeaders,
-    const std::string& subprotocol
-) {
-    std::string head =
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Sec-WebSocket-Accept: " + accept + "\r\n";
-    if (!subprotocol.empty()) {
-        head += "Sec-WebSocket-Protocol: " + subprotocol + "\r\n";
-    }
-    head += extraHeaders;
-    head += "\r\n";
-    return std::vector<uint8_t>(head.begin(), head.end());
-}
-
-}  // namespace detail
 }  // namespace doof_http_server
