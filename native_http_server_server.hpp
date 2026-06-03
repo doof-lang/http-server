@@ -13,7 +13,7 @@ public:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest
+        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest
     ) {
         detail::ignoreSigpipe();
         if (host.empty()) {
@@ -172,7 +172,7 @@ private:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
+        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
         int listenFd,
         std::shared_ptr<detail::Reactor> reactor
     )
@@ -285,7 +285,7 @@ private:
     int32_t idleTimeoutMillis_;
     int32_t responseTimeoutMillis_;
     int32_t maxRequestsPerConnection_;
-    std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
+    doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
 
     mutable std::mutex mutex_;
     bool closed_ = false;

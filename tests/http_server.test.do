@@ -1,6 +1,6 @@
 import { Assert } from "std/assert"
 import { BlobBuilder } from "std/blob"
-import { AsyncEventChannel, createMainAsyncEventChannel, runMainEventLoop } from "std/event"
+import { Channel, ChannelClosed, ChannelMessage, ChannelReady, createChannel, runMainEventLoop } from "std/event"
 import { HttpHeader } from "std/http"
 
 import {
@@ -102,9 +102,21 @@ function encodeTestText(text: string): readonly byte[] {
   return builder.build()
 }
 
+function requestHandler(
+  handler: (request: Request): void,
+): (event: ChannelMessage<Request> | ChannelReady<Request> | ChannelClosed<Request>): void {
+  return (event: ChannelMessage<Request> | ChannelReady<Request> | ChannelClosed<Request>): void => {
+    case event {
+      message: ChannelMessage<Request> -> handler(message.value)
+      _: ChannelReady<Request> -> {}
+      _: ChannelClosed<Request> -> {}
+    }
+  }
+}
+
 function handleDispatch(
   state: DispatchState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.method = request.method
@@ -115,12 +127,12 @@ function handleDispatch(
   state.body = request.getText()
 
   try! request.respond(Response.text(201, "created\n"))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleOneShot(
   state: OneShotState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.empty())
@@ -131,12 +143,12 @@ function handleOneShot(
       state.secondKind = f.error.kind
     }
   }
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleKeepAlive(
   state: KeepAliveState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.count += 1
@@ -148,17 +160,17 @@ function handleKeepAlive(
 
   state.secondPath = request.path
   try! request.respond(Response.text(200, "second\n"))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleSingleResponse(
   state: SingleResponseState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.count += 1
   try! request.respond(Response.text(200, "ok\n"))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function buildCompressionPayload(): readonly byte[] {
@@ -170,7 +182,7 @@ function buildCompressionPayload(): readonly byte[] {
 }
 
 function handleGzipResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response {
@@ -182,22 +194,22 @@ function handleGzipResponse(
     body: buildCompressionPayload(),
     compression: ResponseCompression.Compress,
   })
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleDefaultTextResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.text(
     200,
     "default compression\nactual response\n",
   ))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleStreamResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.stream(
@@ -215,11 +227,11 @@ function handleStreamResponse(
     }],
     ResponseCompression.None,
   ))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleStreamCloseResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.stream(
@@ -235,12 +247,12 @@ function handleStreamCloseResponse(
     }],
     ResponseCompression.None,
   ))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleKeepAliveStream(
   state: KeepAliveState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.count += 1
@@ -262,12 +274,12 @@ function handleKeepAliveStream(
 
   state.secondPath = request.path
   try! request.respond(Response.text(200, "second\n"))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleStreamOneShot(
   state: SingleResponseState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.count += 1
@@ -288,11 +300,11 @@ function handleStreamOneShot(
       state.secondKind = f.error.kind
     }
   }
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleGzipStreamResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.stream(
@@ -310,11 +322,11 @@ function handleGzipStreamResponse(
     }],
     ResponseCompression.Compress,
   ))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleEncodedStreamResponse(
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   try! request.respond(Response.stream(
@@ -336,16 +348,16 @@ function handleEncodedStreamResponse(
     ],
     ResponseCompression.Compress,
   ))
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleWithoutResponse(
   state: SingleResponseState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.count += 1
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function handleWebSocketEventAny(
@@ -393,7 +405,7 @@ function handleWebSocketEventAny(
 
 function handleWebSocketUpgrade(
   state: WebSocketTestState,
-  requestChannel: AsyncEventChannel<Request>,
+  requestChannel: Channel<Request>,
   request: Request,
 ): void {
   state.upgradeAttempt = request.isWebSocketUpgrade()
@@ -401,15 +413,15 @@ function handleWebSocketUpgrade(
     handler: (event): void => handleWebSocketEventAny(state, event),
   }
   request.upgradeToWebSocket(connection)
-  try! requestChannel.close()
+  requestChannel.close()
 }
 
 function assertRequestRejectedBeforeDispatch(requestText: string, statusLine: string): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleSingleResponse(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -455,12 +467,12 @@ function firstChunkPayloadOffset(responseBytes: readonly byte[], bodyStart: int)
   return -1
 }
 
-export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
+export function testServerDispatchesRequestsThroughChannel(): void {
   state := DispatchState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleDispatch(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleDispatch(state, requestChannel!, request)),
     capacity: 4,
     keepsAlive: true,
   }
@@ -495,10 +507,10 @@ export function testServerDispatchesRequestsThroughAsyncEventChannel(): void {
 
 export function testRequestResponderIsOneShot(): void {
   state := OneShotState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleOneShot(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleOneShot(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -538,10 +550,10 @@ export function testResponseConveniencesPreserveExplicitContentType(): void {
 }
 
 export function testResponseGzipCompressionNegotiatesAcceptEncoding(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleGzipResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleGzipResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -573,10 +585,10 @@ export function testResponseGzipCompressionNegotiatesAcceptEncoding(): void {
 }
 
 export function testDefaultResponseCompressionUsesTextPolicy(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleDefaultTextResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleDefaultTextResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -603,10 +615,10 @@ export function testDefaultResponseCompressionUsesTextPolicy(): void {
 }
 
 export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleGzipResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleGzipResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -632,10 +644,10 @@ export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): void 
 }
 
 export function testStreamedResponseUsesChunkedTransferEncoding(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleStreamResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleStreamResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -663,10 +675,10 @@ export function testStreamedResponseUsesChunkedTransferEncoding(): void {
 }
 
 export function testStreamedResponseConnectionCloseClosesAfterFinalChunk(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleStreamCloseResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleStreamCloseResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -693,10 +705,10 @@ export function testStreamedResponseConnectionCloseClosesAfterFinalChunk(): void
 
 export function testStreamedKeepAliveResponseAllowsFollowingRequestAfterFinalChunk(): void {
   state := KeepAliveState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleKeepAliveStream(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleKeepAliveStream(state, requestChannel!, request)),
     capacity: 4,
     keepsAlive: true,
   }
@@ -727,10 +739,10 @@ export function testStreamedKeepAliveResponseAllowsFollowingRequestAfterFinalChu
 
 export function testStreamedResponseResponderIsOneShot(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleStreamOneShot(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleStreamOneShot(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -756,10 +768,10 @@ export function testStreamedResponseResponderIsOneShot(): void {
 }
 
 export function testStreamedGzipResponseNegotiatesAcceptEncoding(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleGzipStreamResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleGzipStreamResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -793,10 +805,10 @@ export function testStreamedGzipResponseNegotiatesAcceptEncoding(): void {
 }
 
 export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleGzipStreamResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleGzipStreamResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -822,10 +834,10 @@ export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): void
 }
 
 export function testStreamedGzipResponseSkipsWhenContentEncodingIsPresent(): void {
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleEncodedStreamResponse(requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleEncodedStreamResponse(requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -853,10 +865,10 @@ export function testStreamedGzipResponseSkipsWhenContentEncodingIsPresent(): voi
 
 export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
   state := WebSocketTestState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -888,10 +900,10 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
 
 export function testInvalidWebSocketHandshakeReportsConnectionError(): void {
   state := WebSocketTestState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleWebSocketUpgrade(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -919,10 +931,10 @@ export function testInvalidWebSocketHandshakeReportsConnectionError(): void {
 
 export function testHttp11ConnectionCanServeSequentialRequests(): void {
   state := KeepAliveState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleKeepAlive(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleKeepAlive(state, requestChannel!, request)),
     capacity: 4,
     keepsAlive: true,
   }
@@ -955,10 +967,10 @@ export function testHttp11ConnectionCanServeSequentialRequests(): void {
 
 export function testIdleKeepAliveConnectionExpires(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleSingleResponse(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -986,10 +998,10 @@ export function testIdleKeepAliveConnectionExpires(): void {
 
 export function testConnectionRequestLimitClosesAfterConfiguredCount(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleSingleResponse(state, requestChannel!, request)),
     capacity: 2,
     keepsAlive: true,
   }
@@ -1017,10 +1029,10 @@ export function testConnectionRequestLimitClosesAfterConfiguredCount(): void {
 
 export function testHandlerThatNeverRespondsTimesOutRequest(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleWithoutResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleWithoutResponse(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -1048,10 +1060,10 @@ export function testHandlerThatNeverRespondsTimesOutRequest(): void {
 
 export function testSlowPartialHeadersExpireWithoutDispatch(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleSingleResponse(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -1079,10 +1091,10 @@ export function testSlowPartialHeadersExpireWithoutDispatch(): void {
 
 export function testChunkedRequestBodyIsDispatched(): void {
   state := DispatchState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleDispatch(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleDispatch(state, requestChannel!, request)),
     capacity: 1,
     keepsAlive: true,
   }
@@ -1282,10 +1294,10 @@ export function testParserFuzzCorpusForHeaderShapeAndObsFoldLikeInputs(): void {
 
 export function testRejectedRequestClosesBeforePipelinedBytesAreDispatched(): void {
   state := SingleResponseState()
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: Channel<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => handleSingleResponse(state, requestChannel!, request),
+  requests := createChannel<Request>{
+    handler: requestHandler((request: Request): void => handleSingleResponse(state, requestChannel!, request)),
     capacity: 2,
     keepsAlive: true,
   }

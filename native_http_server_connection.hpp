@@ -15,7 +15,7 @@ public:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
+        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
         std::shared_ptr<detail::Reactor> reactor
     )
         : transport_(std::move(transport)),
@@ -494,7 +494,7 @@ private:
 
         auto responder = std::make_shared<NativeResponder>(shared_from_this(), attempt.request);
         auto exchange = std::make_shared<NativeExchange>(std::move(attempt.request), responder);
-        const int32_t disposition = onRequest_(std::move(exchange));
+        const int32_t disposition = onRequest_.call(std::move(exchange));
         if (disposition != 0) {
             enqueueImmediateClose(detail::simpleResponseBytes(503, "Service Unavailable\n"));
         }
@@ -563,7 +563,7 @@ private:
     std::string readBuffer_;
     std::vector<uint8_t> writeBuffer_;
     size_t writeOffset_ = 0;
-    std::function<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
+    doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
     std::shared_ptr<detail::Reactor> reactor_;
     std::shared_ptr<detail::WebSocketSession> websocketSession_;
     std::chrono::steady_clock::time_point lastActivityAt_;

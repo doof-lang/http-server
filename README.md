@@ -1,24 +1,31 @@
 # std/http-server
 
 `std/http-server` is a small inbound HTTP primitive built around
-`std/event.AsyncEventChannel<Request>`. A native readiness reactor owns socket
-I/O, immutable `Request` snapshots are delivered onto the supplied event
-channel, and handlers complete the exchange through `request.respond(...)`.
+`std/event.Channel<Request>`. A native readiness reactor owns socket I/O,
+immutable `Request` snapshots are delivered onto the supplied event channel, and
+handlers complete the exchange through `request.respond(...)`.
 
 ## Usage
 
 ```doof
 import { Request, Response, Server, ServerOptions } from "std/http-server"
-import { createMainAsyncEventChannel, runMainEventLoop } from "std/event"
+import { ChannelClosed, ChannelMessage, ChannelReady, createChannel, runMainEventLoop } from "std/event"
 
 function main(): int {
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => {
-      response := case request.path {
-        "/health" -> Response.jsonValue(200, { status: "ok" }),
-        _ -> Response.text(404, "not found\n"),
+  requests := createChannel<Request>{
+    handler: (event: ChannelMessage<Request> | ChannelReady<Request> | ChannelClosed<Request>): void => {
+      case event {
+        message: ChannelMessage<Request> -> {
+          request := message.value
+          response := case request.path {
+            "/health" -> Response.jsonValue(200, { status: "ok" }),
+            _ -> Response.text(404, "not found\n"),
+          }
+          try! request.respond(response)
+        }
+        _: ChannelReady<Request> -> {}
+        _: ChannelClosed<Request> -> {}
       }
-      try! request.respond(response)
     },
     capacity: 256,
     keepsAlive: true,

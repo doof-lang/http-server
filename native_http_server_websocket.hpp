@@ -61,7 +61,7 @@ private:
 
 class NativeWebSocketConnection : public std::enable_shared_from_this<NativeWebSocketConnection> {
 public:
-    using EventCallback = std::function<void(std::shared_ptr<NativeWebSocketEvent>)>;
+    using EventCallback = doof::callback<void(std::shared_ptr<NativeWebSocketEvent>)>;
     using Sender = std::function<doof::Result<void, std::string>(
         int32_t opcode,
         const std::shared_ptr<std::vector<uint8_t>>& payload,
@@ -171,7 +171,7 @@ private:
             callback = callback_;
         }
         if (callback) {
-            callback(std::make_shared<NativeWebSocketEvent>(
+            callback.call(std::make_shared<NativeWebSocketEvent>(
                 kind,
                 std::move(text),
                 std::move(bytes),

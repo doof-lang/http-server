@@ -1,4 +1,4 @@
-import { AsyncEventChannel, AsyncEventChannelError } from "std/event"
+import { Channel, SendError } from "std/event"
 
 import { ServerError, mapNativeVoid, parseServerError } from "./errors"
 import { NativeExchange, NativeHttpServer } from "./native"
@@ -20,7 +20,7 @@ export class Server {
 
   static listen(
     options: ServerOptions,
-    requests: AsyncEventChannel<Request>,
+    requests: Channel<Request>,
   ): Result<Server, ServerError> {
     started := NativeHttpServer.listen(
       options.host,
@@ -52,14 +52,14 @@ export class Server {
 }
 
 function requestDisposition(
-  requests: AsyncEventChannel<Request>,
+  requests: Channel<Request>,
   exchange: NativeExchange,
 ): int {
   delivered := requests.send(requestFromExchange(exchange))
   return case delivered {
     _: Success -> 0,
     f: Failure -> case f.error {
-      AsyncEventChannelError.Full -> 1,
+      SendError.Full -> 1,
       _ -> 2,
     }
   }
