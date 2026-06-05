@@ -1,6 +1,7 @@
 import { BlobBuilder } from "std/blob"
 import { gzip, GzipStream } from "std/gzip"
 import { HttpHeader } from "std/http"
+import { zstdCompress, ZstdCompressStream } from "std/zstd"
 
 import { ServerError, mapNativeVoid } from "./errors"
 import { hasHeader, headerContainsTokenValue, headerValue, withHeader, withVaryAcceptEncoding } from "./headers"
@@ -88,43 +89,6 @@ function isDefaultCompressible(headers: readonly HttpHeader[]): bool {
     lowerContentType.startsWith("image/svg+xml")
 }
 
-function shouldCompressByteResponse(
-  request: ResponseRequestContext,
-  response: Response,
-  body: readonly byte[],
-): bool {
-  if body.length == 0 {
-    return false
-  }
-  if hasHeader(response.headers, "Content-Encoding") {
-    return false
-  }
-  if !requestAcceptsEncoding(request, "gzip") {
-    return false
-  }
-
-  return case response.compression {
-    ResponseCompression.None -> false,
-    ResponseCompression.Compress -> true,
-    ResponseCompression.Default -> isDefaultCompressible(response.headers),
-  }
-}
-
-function shouldCompressStreamResponse(request: ResponseRequestContext, response: Response): bool {
-  if hasHeader(response.headers, "Content-Encoding") {
-    return false
-  }
-  if !requestAcceptsEncoding(request, "gzip") {
-    return false
-  }
-
-  return case response.compression {
-    ResponseCompression.None -> false,
-    ResponseCompression.Compress -> true,
-    ResponseCompression.Default -> isDefaultCompressible(response.headers),
-  }
-}
-
 class ByteResponse {
   readonly status: int
   readonly headers: readonly HttpHeader[]
@@ -137,25 +101,94 @@ class StreamResponse {
   readonly body: Stream<readonly byte[]>
 }
 
+class ResponseEncoding {
+  readonly name: string
+}
+
+const RESPONSE_ENCODING_GZIP = ResponseEncoding { name: "gzip" }
+const RESPONSE_ENCODING_ZSTD = ResponseEncoding { name: "zstd" }
+
+function responseEncodingForRequest(
+  request: ResponseRequestContext,
+  response: Response,
+): ResponseEncoding | null {
+  if hasHeader(response.headers, "Content-Encoding") {
+    return null
+  }
+
+  enabled := case response.compression {
+    ResponseCompression.None -> false,
+    ResponseCompression.Compress -> true,
+    ResponseCompression.Default -> isDefaultCompressible(response.headers),
+  }
+  if !enabled {
+    return null
+  }
+
+  if requestAcceptsEncoding(request, RESPONSE_ENCODING_ZSTD.name) {
+    return RESPONSE_ENCODING_ZSTD
+  }
+  if requestAcceptsEncoding(request, RESPONSE_ENCODING_GZIP.name) {
+    return RESPONSE_ENCODING_GZIP
+  }
+  return null
+}
+
+function compressedBytes(
+  body: readonly byte[],
+  encoding: ResponseEncoding,
+): Result<readonly byte[], ServerError> {
+  if encoding.name == RESPONSE_ENCODING_ZSTD.name {
+    return case zstdCompress(body) {
+      s: Success -> Success { value: s.value },
+      f: Failure -> Failure {
+        error: ServerError {
+          kind: "compression",
+          message: f.error,
+        },
+      },
+    }
+  }
+
+  return Success { value: gzip(body) }
+}
+
 function byteResponseForRequest(
   request: ResponseRequestContext,
   response: Response,
   body: readonly byte[],
-): ByteResponse {
-  if !shouldCompressByteResponse(request, response, body) {
-    return ByteResponse {
+): Result<ByteResponse, ServerError> {
+  if body.length == 0 {
+    return Success { value: ByteResponse {
       status: response.status,
       headers: response.headers,
       body,
-    }
+    } }
   }
 
-  headersWithEncoding := withHeader(response.headers, "Content-Encoding", "gzip")
-  return ByteResponse {
+  encoding := responseEncodingForRequest(request, response) else {
+    return Success { value: ByteResponse {
+      status: response.status,
+      headers: response.headers,
+      body,
+    } }
+  }
+
+  let compressed: readonly byte[] = []
+  case compressedBytes(body, encoding) {
+    s: Success -> {
+      compressed = s.value
+    }
+    f: Failure -> return Failure {
+      error: f.error
+    }
+  }
+  headersWithEncoding := withHeader(response.headers, "Content-Encoding", encoding.name)
+  return Success { value: ByteResponse {
     status: response.status,
     headers: withVaryAcceptEncoding(headersWithEncoding),
-    body: gzip(body),
-  }
+    body: compressed,
+  } }
 }
 
 function streamResponseForRequest(
@@ -163,7 +196,7 @@ function streamResponseForRequest(
   response: Response,
   body: Stream<readonly byte[]>,
 ): StreamResponse {
-  if !shouldCompressStreamResponse(request, response) {
+  encoding := responseEncodingForRequest(request, response) else {
     return StreamResponse {
       status: response.status,
       headers: response.headers,
@@ -171,7 +204,15 @@ function streamResponseForRequest(
     }
   }
 
-  headersWithEncoding := withHeader(response.headers, "Content-Encoding", "gzip")
+  headersWithEncoding := withHeader(response.headers, "Content-Encoding", encoding.name)
+  if encoding.name == RESPONSE_ENCODING_ZSTD.name {
+    return StreamResponse {
+      status: response.status,
+      headers: withVaryAcceptEncoding(headersWithEncoding),
+      body: ZstdCompressStream(body),
+    }
+  }
+
   return StreamResponse {
     status: response.status,
     headers: withVaryAcceptEncoding(headersWithEncoding),
@@ -185,7 +226,15 @@ function respondWithBytes(
   response: Response,
   body: readonly byte[],
 ): Result<void, ServerError> {
-  finalResponse := byteResponseForRequest(request, response, body)
+  let finalResponse: ByteResponse | null = null
+  case byteResponseForRequest(request, response, body) {
+    s: Success -> {
+      finalResponse = s.value
+    }
+    f: Failure -> return Failure {
+      error: f.error
+    }
+  }
   keepAlive := responseKeepAlive(request, finalResponse.headers)
   return mapNativeVoid(nativeResponder.respond(
     fixedResponseHeadText(finalResponse.status, finalResponse.headers, finalResponse.body.length, keepAlive),

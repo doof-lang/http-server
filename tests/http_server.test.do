@@ -573,6 +573,42 @@ export function testResponseGzipCompressionNegotiatesAcceptEncoding(): void {
   Assert.equal(responseBytes[bodyStart + 2], byte(8))
 }
 
+export function testResponseZstdCompressionNegotiatesAcceptEncoding(): void {
+  let requestChannel: ChannelSender<Request> | null = null
+
+  (requests, requestReceiver) := createChannel<Request>{
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestReceiver.onMessage((request: Request): void => handleGzipResponse(requestChannel!, request))
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: zstd, gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  responseBytes := client.waitBytes()
+  try! server.close()
+
+  bodyStart := response.indexOf("\r\n\r\n") + 4
+  Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
+  Assert.isTrue(response.contains("Content-Encoding: zstd"), response)
+  Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
+  Assert.equal(responseBytes[bodyStart], byte(40))
+  Assert.equal(responseBytes[bodyStart + 1], byte(181))
+  Assert.equal(responseBytes[bodyStart + 2], byte(47))
+  Assert.equal(responseBytes[bodyStart + 3], byte(253))
+}
+
 export function testDefaultResponseCompressionUsesTextPolicy(): void {
   let requestChannel: ChannelSender<Request> | null = null
 
@@ -791,6 +827,44 @@ export function testStreamedGzipResponseNegotiatesAcceptEncoding(): void {
   Assert.equal(responseBytes[payloadStart], byte(31))
   Assert.equal(responseBytes[payloadStart + 1], byte(139))
   Assert.equal(responseBytes[payloadStart + 2], byte(8))
+}
+
+export function testStreamedZstdResponseNegotiatesAcceptEncoding(): void {
+  let requestChannel: ChannelSender<Request> | null = null
+
+  (requests, requestReceiver) := createChannel<Request>{
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestReceiver.onMessage((request: Request): void => handleGzipStreamResponse(requestChannel!, request))
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeHttpTestRequest.start(
+    server.host,
+    server.port,
+    "GET / HTTP/1.1\r\nHost: example.test\r\nAccept-Encoding: zstd, gzip\r\nConnection: close\r\n\r\n",
+  )
+
+  runMainEventLoop()
+  response := client.wait()
+  responseBytes := client.waitBytes()
+  try! server.close()
+
+  bodyStart := response.indexOf("\r\n\r\n") + 4
+  payloadStart := firstChunkPayloadOffset(responseBytes, bodyStart)
+  Assert.isTrue(response.contains("Transfer-Encoding: chunked"), response)
+  Assert.isTrue(response.contains("Content-Encoding: zstd"), response)
+  Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
+  Assert.isTrue(payloadStart >= 0, "expected chunk payload offset")
+  Assert.equal(responseBytes[payloadStart], byte(40))
+  Assert.equal(responseBytes[payloadStart + 1], byte(181))
+  Assert.equal(responseBytes[payloadStart + 2], byte(47))
+  Assert.equal(responseBytes[payloadStart + 3], byte(253))
 }
 
 export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): void {

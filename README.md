@@ -83,11 +83,12 @@ If the request channel is full or closed, the listener rejects the request with
   keep-alive behavior after the final chunk.
 
 `Response.compression` controls response compression. The default policy
-compresses gzip-capable clients for common textual content types. Use
+compresses zstd- or gzip-capable clients for common textual content types. Use
 `ResponseCompression.None` to opt out or `ResponseCompression.Compress` to
-request gzip when the client advertises `Accept-Encoding: gzip`. Compression is
-skipped when a response already has `Content-Encoding`; streamed gzip responses
-are compressed incrementally.
+request compression when the client advertises `Accept-Encoding: zstd` or
+`Accept-Encoding: gzip`. Zstd is preferred when both encodings are accepted.
+Compression is skipped when a response already has `Content-Encoding`; streamed
+compressed responses are encoded incrementally.
 
 ## WebSockets
 
