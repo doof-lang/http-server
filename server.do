@@ -1,4 +1,4 @@
-import { Channel, SendError } from "std/event"
+import { ChannelSender, SendError } from "std/event"
 
 import { ServerError, mapNativeVoid, parseServerError } from "./errors"
 import { NativeExchange, NativeHttpServer } from "./native"
@@ -20,7 +20,7 @@ export class Server {
 
   static listen(
     options: ServerOptions,
-    requests: Channel<Request>,
+    requests: ChannelSender<Request>,
   ): Result<Server, ServerError> {
     started := NativeHttpServer.listen(
       options.host,
@@ -52,7 +52,7 @@ export class Server {
 }
 
 function requestDisposition(
-  requests: Channel<Request>,
+  requests: ChannelSender<Request>,
   exchange: NativeExchange,
 ): int {
   delivered := requests.send(requestFromExchange(exchange))

@@ -73,6 +73,10 @@ public:
         return std::make_shared<NativeWebSocketConnection>();
     }
 
+    ~NativeWebSocketConnection() {
+        removeKeepAlive();
+    }
+
     void setEventCallback(EventCallback callback) {
         std::lock_guard<std::mutex> lock(mutex_);
         callback_ = std::move(callback);
@@ -124,6 +128,7 @@ public:
     }
 
     void markOpen() {
+        addKeepAlive();
         setState(NativeWebSocketState::Open);
         emit(NativeWebSocketEventKind::Open, "", {}, 0, "", true, "");
     }
@@ -131,11 +136,13 @@ public:
     void markError(const std::string& error) {
         setState(NativeWebSocketState::Error);
         emit(NativeWebSocketEventKind::Error, "", {}, 0, "", false, error);
+        removeKeepAlive();
     }
 
     void markClosed(int32_t code, const std::string& reason, bool wasClean) {
         setState(NativeWebSocketState::Closed);
         emit(NativeWebSocketEventKind::Close, "", {}, code, reason, wasClean, "");
+        removeKeepAlive();
     }
 
     void emitText(const std::string& text) {
@@ -151,6 +158,34 @@ public:
     }
 
 private:
+    void addKeepAlive() {
+        bool shouldAdd = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!countedKeepAlive_) {
+                countedKeepAlive_ = true;
+                shouldAdd = true;
+            }
+        }
+        if (shouldAdd) {
+            doof::detail::ApplicationDomain::shared().add_keep_alive_source(true);
+        }
+    }
+
+    void removeKeepAlive() {
+        bool shouldRemove = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (countedKeepAlive_) {
+                countedKeepAlive_ = false;
+                shouldRemove = true;
+            }
+        }
+        if (shouldRemove) {
+            doof::detail::ApplicationDomain::shared().remove_keep_alive_source(true);
+        }
+    }
+
     void setState(NativeWebSocketState state) {
         std::lock_guard<std::mutex> lock(mutex_);
         state_ = state;
@@ -171,7 +206,7 @@ private:
             callback = callback_;
         }
         if (callback) {
-            callback.call(std::make_shared<NativeWebSocketEvent>(
+            callback.dispatch(std::make_shared<NativeWebSocketEvent>(
                 kind,
                 std::move(text),
                 std::move(bytes),
@@ -185,6 +220,7 @@ private:
 
     mutable std::mutex mutex_;
     NativeWebSocketState state_ = NativeWebSocketState::Connecting;
+    bool countedKeepAlive_ = false;
     EventCallback callback_;
     Sender sender_;
 };

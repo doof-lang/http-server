@@ -494,7 +494,7 @@ private:
 
         auto responder = std::make_shared<NativeResponder>(shared_from_this(), attempt.request);
         auto exchange = std::make_shared<NativeExchange>(std::move(attempt.request), responder);
-        const int32_t disposition = onRequest_.call(std::move(exchange));
+        const int32_t disposition = doof::detail::call_callback_unchecked(onRequest_, std::move(exchange));
         if (disposition != 0) {
             enqueueImmediateClose(detail::simpleResponseBytes(503, "Service Unavailable\n"));
         }
