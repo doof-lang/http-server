@@ -6,7 +6,7 @@ import { Request, requestFromExchange } from "./request"
 
 export class ServerOptions {
   readonly host: string = "127.0.0.1"
-  readonly port: int
+  readonly port: int = 0
   readonly maxBodyBytes: long = 1_048_576L
   readonly idleTimeoutMillis: int = 30_000
   readonly responseTimeoutMillis: int = 30_000
