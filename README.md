@@ -52,6 +52,12 @@ the receiver endpoint. If the handler needs to coordinate with another actor or
 native component, pass that component its own endpoint or create a second
 channel for replies.
 
+## Samples
+
+- `samples/simple` serves files from a local `public` directory and shows
+  basic URL path decoding, traversal rejection, content type headers, and
+  directory `index.html` handling.
+
 ## Request Flow
 
 1. The native reactor reads and parses a complete HTTP request.
