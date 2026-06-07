@@ -61,7 +61,8 @@ private:
 
 class NativeWebSocketConnection : public std::enable_shared_from_this<NativeWebSocketConnection> {
 public:
-    using EventCallback = doof::callback<void(std::shared_ptr<NativeWebSocketEvent>)>;
+    using EventCallback = doof::callback<int32_t(std::shared_ptr<NativeWebSocketEvent>)>;
+    using ResumeInbound = std::function<void()>;
     using Sender = std::function<doof::Result<void, std::string>(
         int32_t opcode,
         const std::shared_ptr<std::vector<uint8_t>>& payload,
@@ -85,6 +86,22 @@ public:
     void attach(Sender sender) {
         std::lock_guard<std::mutex> lock(mutex_);
         sender_ = std::move(sender);
+    }
+
+    void attachResumeInbound(ResumeInbound resumeInbound) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        resumeInbound_ = std::move(resumeInbound);
+    }
+
+    void resumeInboundReads() {
+        ResumeInbound resumeInbound;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            resumeInbound = resumeInbound_;
+        }
+        if (resumeInbound) {
+            resumeInbound();
+        }
     }
 
     int32_t state() const {
@@ -127,34 +144,36 @@ public:
         return sender(opcode, payload ? payload : std::make_shared<std::vector<uint8_t>>(), closeCode, closeReason);
     }
 
-    void markOpen() {
+    int32_t markOpen() {
         addKeepAlive();
         setState(NativeWebSocketState::Open);
-        emit(NativeWebSocketEventKind::Open, "", {}, 0, "", true, "");
+        return emit(NativeWebSocketEventKind::Open, "", {}, 0, "", true, "");
     }
 
-    void markError(const std::string& error) {
+    int32_t markError(const std::string& error) {
         setState(NativeWebSocketState::Error);
-        emit(NativeWebSocketEventKind::Error, "", {}, 0, "", false, error);
+        const auto code = emit(NativeWebSocketEventKind::Error, "", {}, 0, "", false, error);
         removeKeepAlive();
+        return code;
     }
 
-    void markClosed(int32_t code, const std::string& reason, bool wasClean) {
+    int32_t markClosed(int32_t code, const std::string& reason, bool wasClean) {
         setState(NativeWebSocketState::Closed);
-        emit(NativeWebSocketEventKind::Close, "", {}, code, reason, wasClean, "");
+        const auto pressure = emit(NativeWebSocketEventKind::Close, "", {}, code, reason, wasClean, "");
         removeKeepAlive();
+        return pressure;
     }
 
-    void emitText(const std::string& text) {
-        emit(NativeWebSocketEventKind::Text, text, {}, 0, "", true, "");
+    int32_t emitText(const std::string& text) {
+        return emit(NativeWebSocketEventKind::Text, text, {}, 0, "", true, "");
     }
 
-    void emitBinary(std::shared_ptr<std::vector<uint8_t>> bytes) {
-        emit(NativeWebSocketEventKind::Binary, "", std::move(bytes), 0, "", true, "");
+    int32_t emitBinary(std::shared_ptr<std::vector<uint8_t>> bytes) {
+        return emit(NativeWebSocketEventKind::Binary, "", std::move(bytes), 0, "", true, "");
     }
 
-    void emitWritable() {
-        emit(NativeWebSocketEventKind::Writable, "", {}, 0, "", true, "");
+    int32_t emitWritable() {
+        return emit(NativeWebSocketEventKind::Writable, "", {}, 0, "", true, "");
     }
 
 private:
@@ -191,7 +210,7 @@ private:
         state_ = state;
     }
 
-    void emit(
+    int32_t emit(
         NativeWebSocketEventKind kind,
         std::string text,
         std::shared_ptr<std::vector<uint8_t>> bytes,
@@ -206,7 +225,7 @@ private:
             callback = callback_;
         }
         if (callback) {
-            callback.dispatch(std::make_shared<NativeWebSocketEvent>(
+            return doof::detail::call_callback_unchecked(callback, std::make_shared<NativeWebSocketEvent>(
                 kind,
                 std::move(text),
                 std::move(bytes),
@@ -216,12 +235,14 @@ private:
                 std::move(error)
             ));
         }
+        return 0;
     }
 
     mutable std::mutex mutex_;
     NativeWebSocketState state_ = NativeWebSocketState::Connecting;
     bool countedKeepAlive_ = false;
     EventCallback callback_;
+    ResumeInbound resumeInbound_;
     Sender sender_;
 };
 

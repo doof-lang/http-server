@@ -18,7 +18,7 @@ export import class NativeResponder from "./native_http_server.hpp" as doof_http
   upgradeToWebSocket(
     websocket: NativeWebSocketConnection,
     responseText: string,
-    callback: (event: NativeWebSocketEvent): void,
+    callback: (event: NativeWebSocketEvent): int,
   ): void
 }
 
@@ -55,6 +55,7 @@ export import class NativeWebSocketConnection from "./native_http_server.hpp" as
   }
 
   close(code: int, reason: string): Result<void, string>
+  resumeInboundReads(): void
   state(): int
 }
 

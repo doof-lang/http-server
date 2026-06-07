@@ -10,13 +10,15 @@ import {
   Server,
   ServerOptions,
   WebSocketClose,
-  WebSocketConnection,
   WebSocketError,
   WebSocketEvent,
   WebSocketBinary,
   WebSocketOpen,
+  WebSocketOptions,
+  WebSocketSendText,
   WebSocketText,
   WebSocketWritable,
+  createWebSocketConnection,
 } from "../index"
 
 import class NativeHttpTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpTestRequest {
@@ -36,6 +38,7 @@ import class NativeHttpRequestParserFuzz from "../native_http_server_test_suppor
 
 import class NativeWebSocketTestClient from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeWebSocketTestClient {
   static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
+  static startExchangeThreeTexts(host: string, port: int, requestText: string, first: string, second: string, third: string): NativeWebSocketTestClient
   static startHandshakeOnly(host: string, port: int, requestText: string): NativeWebSocketTestClient
   wait(): string
 }
@@ -66,6 +69,7 @@ class SingleResponseState {
 
 class WebSocketTestState {
   openCount: int = 0
+  textCount: int = 0
   text: string = ""
   closeCode: int = 0
   errorKind: string = ""
@@ -365,8 +369,11 @@ function handleWebSocketEventAny(
   textEvent := event as WebSocketText
   case textEvent {
     textSuccess: Success -> {
+      state.textCount += 1
       state.text = textSuccess.value.text
-      try! textSuccess.value.connection.sendText("echo:" + textSuccess.value.text)
+      try! textSuccess.value.connection.commands.send(WebSocketSendText {
+        text: "echo:" + textSuccess.value.text,
+      })
       return
     }
     _: Failure -> {}
@@ -398,9 +405,22 @@ function handleWebSocketUpgrade(
   request: Request,
 ): void {
   state.upgradeAttempt = request.isWebSocketUpgrade()
-  connection := WebSocketConnection {
-    handler: (event): void => handleWebSocketEventAny(state, event),
-  }
+  connection := createWebSocketConnection()
+  connection.events.onMessage((event: WebSocketEvent): void => handleWebSocketEventAny(state, event))
+  request.upgradeToWebSocket(connection)
+  requestChannel.close()
+}
+
+function handleBackpressuredWebSocketUpgrade(
+  state: WebSocketTestState,
+  requestChannel: ChannelSender<Request>,
+  request: Request,
+): void {
+  state.upgradeAttempt = request.isWebSocketUpgrade()
+  connection := createWebSocketConnection(WebSocketOptions {
+    eventCapacity: 4,
+  })
+  connection.events.onMessage((event: WebSocketEvent): void => handleWebSocketEventAny(state, event))
   request.upgradeToWebSocket(connection)
   requestChannel.close()
 }
@@ -959,6 +979,43 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): void {
   Assert.isTrue(clientResponse.contains("HTTP/1.1 101 Switching Protocols"), clientResponse)
   Assert.isTrue(clientResponse.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), clientResponse)
   Assert.isTrue(clientResponse.contains("frame|1|echo:hello"), clientResponse)
+}
+
+export function testWebSocketInboundBackpressurePausesAndResumesSocketReads(): void {
+  state := WebSocketTestState()
+  let requestChannel: ChannelSender<Request> | null = null
+
+  (requests, requestReceiver) := createChannel<Request>{
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestReceiver.onMessage((request: Request): void => handleBackpressuredWebSocketUpgrade(state, requestChannel!, request))
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeWebSocketTestClient.startExchangeThreeTexts(
+    server.host,
+    server.port,
+    "GET /socket HTTP/1.1\r\nHost: example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    "one",
+    "two",
+    "three",
+  )
+
+  runMainEventLoop()
+  clientResponse := client.wait()
+  try! server.close()
+
+  Assert.equal(state.openCount, 1, clientResponse)
+  Assert.equal(state.textCount, 3, clientResponse)
+  Assert.equal(state.text, "three", clientResponse)
+  Assert.isTrue(clientResponse.contains("frame|1|echo:one"), clientResponse)
+  Assert.isTrue(clientResponse.contains("frame|1|echo:two"), clientResponse)
+  Assert.isTrue(clientResponse.contains("frame|1|echo:three"), clientResponse)
 }
 
 export function testInvalidWebSocketHandshakeReportsConnectionError(): void {

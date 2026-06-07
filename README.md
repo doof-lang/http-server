@@ -103,9 +103,55 @@ on `Upgrade: websocket` and a `Connection` header containing the `upgrade`
 token.
 
 `Request.upgradeToWebSocket(connection)` claims an HTTP request for WebSocket
-upgrade using a caller-created `WebSocketConnection`. The method returns `void`;
-handshake and runtime failures are reported as `WebSocketError` events through
-the connection handler.
+upgrade using a caller-created `WebSocketConnection`. Create connections with
+`createWebSocketConnection(...)`; inbound websocket events are delivered through
+`connection.events`, and application writes are sent through
+`connection.commands`.
+
+```doof
+import {
+  Request,
+  WebSocketEvent,
+  WebSocketOptions,
+  WebSocketSendText,
+  WebSocketText,
+  createWebSocketConnection,
+} from "std/http-server"
+
+function handleSocketEvent(event: WebSocketEvent): void {
+  text := event as WebSocketText
+  case text {
+    s: Success -> {
+      try! s.value.connection.commands.send(WebSocketSendText {
+        text: "echo:" + s.value.text,
+      })
+    }
+    _: Failure -> {}
+  }
+}
+
+function handleRequest(request: Request): void {
+  if !request.isWebSocketUpgrade() {
+    return
+  }
+
+  connection := createWebSocketConnection(WebSocketOptions {
+    eventCapacity: 1024,
+    commandCapacity: 1024,
+  })
+  connection.events.onMessage(handleSocketEvent)
+  request.upgradeToWebSocket(connection)
+}
+```
+
+Handshake and runtime failures are reported as `WebSocketError` values through
+the event receiver. Outbound commands are `WebSocketSendText`,
+`WebSocketSendBinary`, `WebSocketPing`, and `WebSocketCloseCommand`.
+
+The inbound event channel applies backpressure to the native socket reader.
+When the channel reaches high-water, the server pauses read interest for that
+websocket connection and leaves already-buffered bytes in place. Reads resume
+after the channel drains to low-water and the sender receives `onReady`.
 
 WebSocket v1 supports HTTP/1.1 RFC 6455 handshakes, text and binary messages,
 ping/pong, close frames, and fragmented text/binary messages. WebSocket message

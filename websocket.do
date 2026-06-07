@@ -1,4 +1,5 @@
 import { BlobBuilder } from "std/blob"
+import { Backpressure, ChannelReceiver, ChannelSender, SendError, createChannel } from "std/event"
 import { HttpHeader } from "std/http"
 
 import { ServerError, mapNativeVoid, parseServerError } from "./errors"
@@ -25,6 +26,7 @@ export const WEBSOCKET_CLOSE_INTERNAL_ERROR = 1011
 
 export class WebSocketOptions {
   readonly eventCapacity: int = 1024
+  readonly commandCapacity: int = 1024
   readonly headers: readonly HttpHeader[] = []
   readonly subprotocol: string | null = null
 }
@@ -36,6 +38,12 @@ export type WebSocketEvent =
   WebSocketWritable |
   WebSocketClose |
   WebSocketError
+
+export type WebSocketCommand =
+  WebSocketSendText |
+  WebSocketSendBinary |
+  WebSocketPing |
+  WebSocketCloseCommand
 
 export class WebSocketOpen {
   readonly connection: WebSocketConnection
@@ -67,33 +75,70 @@ export class WebSocketError {
   readonly error: ServerError
 }
 
+export class WebSocketSendText {
+  readonly text: string
+}
+
+export class WebSocketSendBinary {
+  readonly bytes: readonly byte[]
+}
+
+export class WebSocketPing {
+}
+
+export class WebSocketCloseCommand {
+  readonly code: int = 1000
+  readonly reason: string = ""
+}
+
 export class WebSocketConnection {
-  readonly handler: (event: WebSocketEvent): void
+  readonly events: ChannelReceiver<WebSocketEvent>
+  readonly commands: ChannelSender<WebSocketCommand>
   readonly options: WebSocketOptions = WebSocketOptions {}
+  private readonly eventSender: ChannelSender<WebSocketEvent>
+  private readonly commandReceiver: ChannelReceiver<WebSocketCommand>
   private readonly native: NativeWebSocketConnection = NativeWebSocketConnection()
-
-  sendText(text: string): Result<void, ServerError> {
-    return mapNativeVoid(this.native.sendText(text))
-  }
-
-  sendBinary(bytes: readonly byte[]): Result<void, ServerError> {
-    return mapNativeVoid(this.native.sendBinary(bytes))
-  }
-
-  ping(): Result<void, ServerError> {
-    return mapNativeVoid(this.native.ping())
-  }
-
-  close(
-    code: int = 1000,
-    reason: string = "",
-  ): Result<void, ServerError> {
-    return mapNativeVoid(this.native.close(code, reason))
-  }
 
   state(): WebSocketState {
     return nativeStateToPublic(this.native.state())
   }
+
+  close(): void {
+    this.commands.close()
+    this.events.close()
+  }
+}
+
+export function createWebSocketConnection(
+  options: WebSocketOptions = WebSocketOptions {},
+): WebSocketConnection {
+  (eventSender, events) := createChannel<WebSocketEvent>{
+    capacity: options.eventCapacity,
+    keepsAlive: true,
+  }
+  (commands, commandReceiver) := createChannel<WebSocketCommand>{
+    capacity: options.commandCapacity,
+    keepsAlive: true,
+  }
+
+  connection := WebSocketConnection {
+    events,
+    commands,
+    options,
+    eventSender,
+    commandReceiver,
+  }
+
+  commandReceiver.onMessage((command: WebSocketCommand): void => handleWebSocketCommand(connection, command))
+  commandReceiver.onClosed((): void => {
+    ignored := connection.native.close(WEBSOCKET_CLOSE_NORMAL, "")
+  })
+  eventSender.onReady((): void => connection.native.resumeInboundReads())
+  eventSender.onClosed((): void => {
+    ignored := connection.native.close(WEBSOCKET_CLOSE_NORMAL, "")
+  })
+
+  return connection
 }
 
 export function upgradeNativeResponderToWebSocket(
@@ -104,13 +149,13 @@ export function upgradeNativeResponderToWebSocket(
   connection: WebSocketConnection,
 ): void {
   if !headersAreSafe(connection.options.headers) {
-    connection.handler(WebSocketError {
+    failWebSocketConnection(
       connection,
-      error: ServerError {
+      ServerError {
         kind: "invalid-header",
         message: "WebSocket response headers cannot contain CR or LF characters",
       },
-    })
+    )
     return
   }
 
@@ -126,10 +171,7 @@ export function upgradeNativeResponderToWebSocket(
         encodeText("Bad Request\n"),
         false,
       )
-      connection.handler(WebSocketError {
-        connection,
-        error: parseServerError(f.error),
-      })
+      failWebSocketConnection(connection, parseServerError(f.error))
       return
     }
   }
@@ -138,10 +180,117 @@ export function upgradeNativeResponderToWebSocket(
   nativeResponder.upgradeToWebSocket(
     connection.native,
     websocketHandshakeResponseText(accept, renderHeaders(connection.options.headers), subprotocol),
-    (event: NativeWebSocketEvent): void => {
-      connection.handler(nativeWebSocketEventToPublic(connection, event))
+    (event: NativeWebSocketEvent): int => {
+      return emitNativeWebSocketEvent(connection, event)
     },
   )
+}
+
+export function failWebSocketConnection(
+  connection: WebSocketConnection,
+  error: ServerError,
+): void {
+  emitLocalWebSocketEvent(connection, WebSocketError {
+    connection,
+    error,
+  })
+  connection.commands.close()
+  connection.events.close()
+}
+
+function handleWebSocketCommand(
+  connection: WebSocketConnection,
+  command: WebSocketCommand,
+): void {
+  textCommand := command as WebSocketSendText
+  case textCommand {
+    s: Success -> {
+      reportCommandResult(connection, connection.native.sendText(s.value.text))
+      return
+    }
+    _: Failure -> {}
+  }
+
+  binaryCommand := command as WebSocketSendBinary
+  case binaryCommand {
+    s: Success -> {
+      reportCommandResult(connection, connection.native.sendBinary(s.value.bytes))
+      return
+    }
+    _: Failure -> {}
+  }
+
+  pingCommand := command as WebSocketPing
+  case pingCommand {
+    _: Success -> {
+      reportCommandResult(connection, connection.native.ping())
+      return
+    }
+    _: Failure -> {}
+  }
+
+  closeCommand := command as WebSocketCloseCommand
+  case closeCommand {
+    s: Success -> {
+      reportCommandResult(connection, connection.native.close(s.value.code, s.value.reason))
+      return
+    }
+    _: Failure -> {}
+  }
+}
+
+function reportCommandResult(
+  connection: WebSocketConnection,
+  result: Result<void, string>,
+): void {
+  mapped := mapNativeVoid(result)
+  case mapped {
+    _: Success -> {}
+    f: Failure -> {
+      emitLocalWebSocketEvent(connection, WebSocketError {
+        connection,
+        error: f.error,
+      })
+    }
+  }
+}
+
+function emitLocalWebSocketEvent(
+  connection: WebSocketConnection,
+  event: WebSocketEvent,
+): void {
+  ignored := connection.eventSender.send(event)
+}
+
+function emitNativeWebSocketEvent(
+  connection: WebSocketConnection,
+  event: NativeWebSocketEvent,
+): int {
+  publicEvent := nativeWebSocketEventToPublic(connection, event)
+  sent := connection.eventSender.send(publicEvent)
+  code := channelSendResultToNativeCode(sent)
+
+  if event.kind() == 4 || event.kind() == 5 {
+    connection.commands.close()
+    connection.events.close()
+  }
+
+  return code
+}
+
+function channelSendResultToNativeCode(
+  sent: Result<Backpressure, SendError>,
+): int {
+  return case sent {
+    s: Success -> case s.value {
+      Backpressure.None -> 0,
+      Backpressure.High -> 1,
+    },
+    f: Failure -> case f.error {
+      SendError.Full -> 2,
+      SendError.Closed -> 3,
+    },
+  }
 }
 
 function websocketHandshakeResponseText(

@@ -155,6 +155,9 @@ public:
         ) {
             return self->enqueueWebSocketFrame(opcode, payload, closeCode, closeReason);
         });
+        websocket->attachResumeInbound([self] {
+            self->resumeWebSocketReads();
+        });
         websocketSession_ = std::make_shared<detail::WebSocketSession>(
             websocket,
             maxBodyBytes_,
@@ -169,11 +172,11 @@ public:
             [self](const std::string& message, int32_t code) {
                 self->closeWithProtocolError(message, code);
             },
-            [self](int32_t code, const std::string& reason, bool wasClean) {
-                self->markWebSocketClosed(code, reason, wasClean);
+            [self](int32_t code, const std::string& reason, bool wasClean) -> int32_t {
+                return self->markWebSocketClosed(code, reason, wasClean);
             }
         );
-        websocket->markOpen();
+        handleWebSocketEventPressure(websocket->markOpen());
         armWriteInterest();
         return doof::Result<void, std::string>::success();
     }
@@ -316,7 +319,7 @@ public:
             return;
         }
 
-        reactor_->updateHandler(fd(), true, false);
+        reactor_->updateHandler(fd(), shouldReadAfterWrite(), false);
         if (isWebSocketMode()) {
             notifyWebSocketWritable();
         } else {
@@ -360,14 +363,16 @@ public:
 private:
     void armWriteInterest() {
         int currentFd = -1;
+        bool wantsRead = true;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_) {
                 return;
             }
             currentFd = transport_ ? transport_->fd() : -1;
+            wantsRead = shouldReadLocked();
         }
-        reactor_->updateHandler(currentFd, true, true);
+        reactor_->updateHandler(currentFd, wantsRead, true);
         onWritable();
     }
 
@@ -383,7 +388,7 @@ private:
             session = websocketSession_;
         }
         if (session) {
-            session->notifyWritable();
+            handleWebSocketEventPressure(session->notifyWritable());
         }
     }
 
@@ -410,8 +415,12 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 session = websocketSession_;
             }
+            int32_t pressure = 0;
             if (session) {
-                session->handleFrame(frame.fin, frame.opcode, std::move(frame.payload));
+                pressure = session->handleFrame(frame.fin, frame.opcode, std::move(frame.payload));
+            }
+            if (handleWebSocketEventPressure(pressure)) {
+                return;
             }
             if (shouldCloseAfterWrite()) {
                 armWriteInterest();
@@ -445,18 +454,76 @@ private:
         armWriteInterest();
     }
 
-    void markWebSocketClosed(int32_t code, const std::string& reason, bool wasClean) {
+    int32_t markWebSocketClosed(int32_t code, const std::string& reason, bool wasClean) {
         std::shared_ptr<detail::WebSocketSession> session;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (websocketCloseEmitted_) {
-                return;
+                return 0;
             }
             websocketCloseEmitted_ = true;
             session = websocketSession_;
         }
         if (session && session->connection()) {
-            session->connection()->markClosed(code, reason, wasClean);
+            return session->connection()->markClosed(code, reason, wasClean);
+        }
+        return 0;
+    }
+
+    bool shouldReadLocked() const {
+        return !websocketMode_ || !websocketReadPaused_;
+    }
+
+    bool shouldReadAfterWrite() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return shouldReadLocked();
+    }
+
+    bool handleWebSocketEventPressure(int32_t pressure) {
+        if (pressure == 1) {
+            pauseWebSocketReads();
+            return true;
+        }
+        if (pressure >= 2) {
+            closeWithProtocolError("internal-error|websocket event channel is full or closed", 1011);
+            return true;
+        }
+        return false;
+    }
+
+    void pauseWebSocketReads() {
+        int currentFd = -1;
+        bool wantsWrite = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || !websocketMode_) {
+                return;
+            }
+            websocketReadPaused_ = true;
+            currentFd = transport_ ? transport_->fd() : -1;
+            wantsWrite = writeOffset_ < writeBuffer_.size();
+        }
+        reactor_->updateHandler(currentFd, false, wantsWrite);
+    }
+
+    void resumeWebSocketReads() {
+        const auto self = shared_from_this();
+        if (!reactor_->post([self] {
+            int currentFd = -1;
+            bool wantsWrite = false;
+            {
+                std::lock_guard<std::mutex> lock(self->mutex_);
+                if (self->closed_ || !self->websocketMode_) {
+                    return;
+                }
+                self->websocketReadPaused_ = false;
+                currentFd = self->transport_ ? self->transport_->fd() : -1;
+                wantsWrite = self->writeOffset_ < self->writeBuffer_.size();
+            }
+            self->reactor_->updateHandler(currentFd, true, wantsWrite);
+            self->processWebSocketFrames();
+        })) {
+            closeFromServer();
         }
     }
 
@@ -551,6 +618,7 @@ private:
     bool closed_ = false;
     bool awaitingResponse_ = false;
     bool websocketMode_ = false;
+    bool websocketReadPaused_ = false;
     bool streamingResponse_ = false;
     bool streamResponseKeepAlive_ = false;
     bool websocketCloseEmitted_ = false;

@@ -7,7 +7,7 @@ import { headersAreSafe, parseHeaders, renderHeaders } from "./headers"
 import { NativeExchange, NativeResponder } from "./native"
 import { Response } from "./response"
 import { ResponseRequestContext, respondToNative } from "./response_writer"
-import { WebSocketConnection, WebSocketError, upgradeNativeResponderToWebSocket } from "./websocket"
+import { WebSocketConnection, failWebSocketConnection, upgradeNativeResponderToWebSocket } from "./websocket"
 
 export class Request {
   readonly method: string
@@ -92,12 +92,9 @@ export class Request {
 
   upgradeToWebSocket(connection: WebSocketConnection): void {
     nativeResponder := this.responder else {
-      connection.handler(WebSocketError {
-        connection,
-        error: ServerError {
-          kind: "missing-responder",
-          message: "Request was not created by Server.listen and cannot be upgraded",
-        },
+      failWebSocketConnection(connection, ServerError {
+        kind: "missing-responder",
+        message: "Request was not created by Server.listen and cannot be upgraded",
       })
       return
     }

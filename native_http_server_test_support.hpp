@@ -340,6 +340,30 @@ public:
         return client;
     }
 
+    static std::shared_ptr<NativeWebSocketTestClient> startExchangeThreeTexts(
+        const std::string& host,
+        int32_t port,
+        const std::string& requestText,
+        const std::string& first,
+        const std::string& second,
+        const std::string& third
+    ) {
+        auto client = std::shared_ptr<NativeWebSocketTestClient>(
+            new NativeWebSocketTestClient(host, port, requestText, first, true)
+        );
+        client->worker_ = std::thread([client, second, third] {
+            client->response_ = exchangeThreeTexts(
+                client->host_,
+                client->port_,
+                client->requestText_,
+                client->text_,
+                second,
+                third
+            );
+        });
+        return client;
+    }
+
     ~NativeWebSocketTestClient() {
         if (worker_.joinable()) {
             worker_.join();
@@ -399,6 +423,45 @@ public:
             return "ERROR: failed to write handshake";
         }
         std::string response = client.readUntil(fd, "\r\n\r\n");
+        ::close(fd);
+        return response;
+    }
+
+    static std::string exchangeThreeTexts(
+        const std::string& host,
+        int32_t port,
+        const std::string& requestText,
+        const std::string& first,
+        const std::string& second,
+        const std::string& third
+    ) {
+        NativeWebSocketTestClient client(host, port);
+        const int fd = client.connectWithRetry();
+        if (fd < 0) {
+            return "ERROR: failed to connect";
+        }
+        if (!client.writeAll(fd, requestText)) {
+            ::close(fd);
+            return "ERROR: failed to write handshake";
+        }
+        std::string response = client.readUntil(fd, "\r\n\r\n");
+        if (response.find("HTTP/1.1 101 Switching Protocols") == std::string::npos) {
+            ::close(fd);
+            return response;
+        }
+        if (
+            !client.writeAll(fd, maskedFrame(0x1, std::vector<uint8_t>(first.begin(), first.end()))) ||
+            !client.writeAll(fd, maskedFrame(0x1, std::vector<uint8_t>(second.begin(), second.end()))) ||
+            !client.writeAll(fd, maskedFrame(0x1, std::vector<uint8_t>(third.begin(), third.end())))
+        ) {
+            ::close(fd);
+            return "ERROR: failed to write frames";
+        }
+        response += client.readServerFrame(fd);
+        response += client.readServerFrame(fd);
+        response += client.readServerFrame(fd);
+        (void)client.writeAll(fd, maskedFrame(0x8, closePayload(1000, "")));
+        response += client.readServerFrame(fd);
         ::close(fd);
         return response;
     }

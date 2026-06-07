@@ -14,7 +14,7 @@ public:
         const std::string& closeReason
     )>;
     using ProtocolClose = std::function<void(const std::string& message, int32_t code)>;
-    using MarkClosed = std::function<void(int32_t code, const std::string& reason, bool wasClean)>;
+    using MarkClosed = std::function<int32_t(int32_t code, const std::string& reason, bool wasClean)>;
 
     WebSocketSession(
         std::shared_ptr<NativeWebSocketConnection> websocket,
@@ -33,73 +33,73 @@ public:
         return websocket_;
     }
 
-    void notifyWritable() {
+    int32_t notifyWritable() {
         if (websocket_) {
-            websocket_->emitWritable();
+            return websocket_->emitWritable();
         }
+        return 0;
     }
 
-    void handleFrame(bool fin, uint8_t opcode, std::vector<uint8_t> payload) {
+    int32_t handleFrame(bool fin, uint8_t opcode, std::vector<uint8_t> payload) {
         if (!websocket_) {
-            return;
+            return 0;
         }
 
         if (opcode == 0x8) {
-            handleClose(std::move(payload));
-            return;
+            return handleClose(std::move(payload));
         }
         if (opcode == 0x9) {
             (void)sendFrame_(0xA, std::make_shared<std::vector<uint8_t>>(payload), 0, "");
-            return;
+            return 0;
         }
         if (opcode == 0xA) {
-            return;
+            return 0;
         }
         if (opcode == 0x1 || opcode == 0x2 || opcode == 0x0) {
-            handleDataFrame(fin, opcode, std::move(payload));
-            return;
+            return handleDataFrame(fin, opcode, std::move(payload));
         }
 
         protocolClose_("protocol-error|unsupported websocket opcode", 1002);
+        return 0;
     }
 
 private:
-    void handleClose(std::vector<uint8_t> payload) {
+    int32_t handleClose(std::vector<uint8_t> payload) {
         int32_t code = 1000;
         std::string reason;
         if (payload.size() == 1) {
             protocolClose_("protocol-error|invalid websocket close payload", 1002);
-            return;
+            return 0;
         }
         if (payload.size() >= 2) {
             code = (static_cast<int32_t>(payload[0]) << 8) | static_cast<int32_t>(payload[1]);
             std::vector<uint8_t> reasonBytes(payload.begin() + 2, payload.end());
             if (!isValidUtf8(reasonBytes)) {
                 protocolClose_("invalid-payload|websocket close reason is not valid UTF-8", 1007);
-                return;
+                return 0;
             }
             reason.assign(reasonBytes.begin(), reasonBytes.end());
         }
         (void)sendFrame_(0x8, std::make_shared<std::vector<uint8_t>>(), code, reason);
-        markClosed_(code, reason, true);
+        return markClosed_(code, reason, true);
     }
 
-    void handleDataFrame(bool fin, uint8_t opcode, std::vector<uint8_t> payload) {
+    int32_t handleDataFrame(bool fin, uint8_t opcode, std::vector<uint8_t> payload) {
         uint8_t completeOpcode = opcode;
         std::vector<uint8_t> completePayload;
 
         if (opcode == 0x0) {
             if (fragmentOpcode_ == 0) {
                 protocolClose_("protocol-error|unexpected websocket continuation frame", 1002);
-                return;
+                return 0;
             }
             if (fragmentBuffer_.size() + payload.size() > static_cast<size_t>(maxBodyBytes_)) {
                 protocolClose_("message-too-large|websocket message exceeds configured maxBodyBytes", 1009);
-                return;
+                return 0;
             }
             fragmentBuffer_.insert(fragmentBuffer_.end(), payload.begin(), payload.end());
             if (!fin) {
-                return;
+                return 0;
             }
             completeOpcode = fragmentOpcode_;
             completePayload.swap(fragmentBuffer_);
@@ -107,12 +107,12 @@ private:
         } else {
             if (fragmentOpcode_ != 0) {
                 protocolClose_("protocol-error|new websocket message before continuation completed", 1002);
-                return;
+                return 0;
             }
             if (!fin) {
                 fragmentOpcode_ = opcode;
                 fragmentBuffer_ = std::move(payload);
-                return;
+                return 0;
             }
             completePayload = std::move(payload);
         }
@@ -120,11 +120,11 @@ private:
         if (completeOpcode == 0x1) {
             if (!isValidUtf8(completePayload)) {
                 protocolClose_("invalid-payload|websocket text is not valid UTF-8", 1007);
-                return;
+                return 0;
             }
-            websocket_->emitText(std::string(completePayload.begin(), completePayload.end()));
+            return websocket_->emitText(std::string(completePayload.begin(), completePayload.end()));
         } else {
-            websocket_->emitBinary(std::make_shared<std::vector<uint8_t>>(std::move(completePayload)));
+            return websocket_->emitBinary(std::make_shared<std::vector<uint8_t>>(std::move(completePayload)));
         }
     }
 
