@@ -751,13 +751,8 @@ inline doof::Result<void, std::string> NativeResponder::endStreamResponse(
 
 inline void NativeResponder::upgradeToWebSocket(
     std::shared_ptr<NativeWebSocketConnection> websocket,
-    const std::string& responseText,
-    NativeWebSocketConnection::EventCallback callback
+    const std::string& responseText
 ) {
-    if (websocket) {
-        websocket->setEventCallback(std::move(callback));
-    }
-
     std::shared_ptr<NativeConnection> connection;
     {
         std::lock_guard<std::mutex> lock(mutex_);

@@ -32,8 +32,7 @@ public:
 
     void upgradeToWebSocket(
         std::shared_ptr<NativeWebSocketConnection> websocket,
-        const std::string& responseText,
-        NativeWebSocketConnection::EventCallback callback
+        const std::string& responseText
     );
 
 private:

@@ -1,7 +1,31 @@
 #pragma once
 
+#include "native_event.hpp"
 #include "native_http_server_protocol.hpp"
 #include "native_http_server_websocket_frames.hpp"
+
+#include <variant>
+
+namespace std_::event::index {
+template <typename T>
+struct ChannelReceiver;
+template <typename T>
+struct ChannelSender;
+}
+
+namespace std_::http_server::websocket {
+struct WebSocketBinary;
+struct WebSocketClose;
+struct WebSocketCloseCommand;
+struct WebSocketConnection;
+struct WebSocketError;
+struct WebSocketOpen;
+struct WebSocketPing;
+struct WebSocketSendBinary;
+struct WebSocketSendText;
+struct WebSocketText;
+struct WebSocketWritable;
+}
 
 namespace doof_http_server {
 
@@ -61,7 +85,22 @@ private:
 
 class NativeWebSocketConnection : public std::enable_shared_from_this<NativeWebSocketConnection> {
 public:
-    using EventCallback = doof::callback<int32_t(std::shared_ptr<NativeWebSocketEvent>)>;
+    using PublicEvent = std::variant<
+        std::shared_ptr<std_::http_server::websocket::WebSocketOpen>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketText>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketBinary>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketWritable>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketClose>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketError>
+    >;
+    using PublicCommand = std::variant<
+        std::shared_ptr<std_::http_server::websocket::WebSocketSendText>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketSendBinary>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketPing>,
+        std::shared_ptr<std_::http_server::websocket::WebSocketCloseCommand>
+    >;
+    using EventSender = std_::event::index::ChannelSender<PublicEvent>;
+    using CommandReceiver = std_::event::index::ChannelReceiver<PublicCommand>;
     using ResumeInbound = std::function<void()>;
     using Sender = std::function<doof::Result<void, std::string>(
         int32_t opcode,
@@ -78,10 +117,11 @@ public:
         removeKeepAlive();
     }
 
-    void setEventCallback(EventCallback callback) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        callback_ = std::move(callback);
-    }
+    void attachChannels(
+        std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
+        std::shared_ptr<EventSender> eventSender,
+        std::shared_ptr<CommandReceiver> commandReceiver
+    );
 
     void attach(Sender sender) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -153,6 +193,7 @@ public:
     int32_t markError(const std::string& error) {
         setState(NativeWebSocketState::Error);
         const auto code = emit(NativeWebSocketEventKind::Error, "", {}, 0, "", false, error);
+        closeEventChannel();
         removeKeepAlive();
         return code;
     }
@@ -160,6 +201,7 @@ public:
     int32_t markClosed(int32_t code, const std::string& reason, bool wasClean) {
         setState(NativeWebSocketState::Closed);
         const auto pressure = emit(NativeWebSocketEventKind::Close, "", {}, code, reason, wasClean, "");
+        closeEventChannel();
         removeKeepAlive();
         return pressure;
     }
@@ -210,6 +252,25 @@ private:
         state_ = state;
     }
 
+    void closeEventChannel() {
+        std::shared_ptr<doof_event::NativeChannel> eventChannel;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            eventChannel = eventChannel_;
+        }
+        if (eventChannel) {
+            eventChannel->tryClose();
+        }
+    }
+
+    void handleCommand(PublicCommand command);
+    void pauseCommandChannel();
+    void resumeCommandChannel();
+    void emitErrorToPublicChannel(const std::string& raw);
+    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> publicConnection() const;
+    int32_t emitPublicEvent(PublicEvent event, bool keyed);
+    void closePublicChannels();
+
     int32_t emit(
         NativeWebSocketEventKind kind,
         std::string text,
@@ -218,32 +279,23 @@ private:
         std::string reason,
         bool wasClean,
         std::string error
-    ) {
-        EventCallback callback;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            callback = callback_;
-        }
-        if (callback) {
-            return doof::detail::call_callback_unchecked(callback, std::make_shared<NativeWebSocketEvent>(
-                kind,
-                std::move(text),
-                std::move(bytes),
-                code,
-                std::move(reason),
-                wasClean,
-                std::move(error)
-            ));
-        }
-        return 0;
-    }
+    );
 
     mutable std::mutex mutex_;
     NativeWebSocketState state_ = NativeWebSocketState::Connecting;
     bool countedKeepAlive_ = false;
-    EventCallback callback_;
+    std::shared_ptr<doof_event::NativeChannel> eventChannel_;
+    std::shared_ptr<doof_event::NativeChannel> commandChannel_;
+    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection_;
     ResumeInbound resumeInbound_;
     Sender sender_;
 };
+
+void attachWebSocketChannels(
+    std::shared_ptr<NativeWebSocketConnection> native,
+    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
+    std::shared_ptr<NativeWebSocketConnection::EventSender> eventSender,
+    std::shared_ptr<NativeWebSocketConnection::CommandReceiver> commandReceiver
+);
 
 }  // namespace doof_http_server

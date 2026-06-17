@@ -4,6 +4,9 @@
   "license": "ISC",
   "build": {
     "native": {
+      "sourceFiles": [
+        "native_http_server_websocket.cpp"
+      ],
       "extraCopyPaths": [
         "native_http_server.hpp",
         "native_http_server_common.hpp",

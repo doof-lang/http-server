@@ -1,11 +1,18 @@
 import { BlobBuilder } from "std/blob"
-import { Backpressure, ChannelReceiver, ChannelSender, SendError, createChannel } from "std/event"
+import { ChannelReceiver, ChannelSender, createChannel } from "std/event"
 import { HttpHeader } from "std/http"
 
-import { ServerError, mapNativeVoid, parseServerError } from "./errors"
+import { ServerError, parseServerError } from "./errors"
 import { headersAreSafe, renderHeaders } from "./headers"
-import { NativeResponder, NativeWebSocketConnection, NativeWebSocketEvent } from "./native"
+import { NativeResponder, NativeWebSocketConnection } from "./native"
 import { validateWebSocketHandshake } from "./websocket_internal"
+
+import function _attachNativeWebSocketChannels(
+  native: NativeWebSocketConnection,
+  connection: WebSocketConnection,
+  eventSender: ChannelSender<WebSocketEvent>,
+  commandReceiver: ChannelReceiver<WebSocketCommand>,
+): void from "./native_http_server.hpp" as doof_http_server::attachWebSocketChannels
 
 export enum WebSocketState {
   Connecting,
@@ -77,10 +84,12 @@ export class WebSocketError {
 
 export class WebSocketSendText {
   readonly text: string
+  readonly coalesceKey: string | null = null
 }
 
 export class WebSocketSendBinary {
   readonly bytes: readonly byte[]
+  readonly coalesceKey: string | null = null
 }
 
 export class WebSocketPing {
@@ -97,7 +106,7 @@ export class WebSocketConnection {
   readonly options: WebSocketOptions = WebSocketOptions {}
   private readonly eventSender: ChannelSender<WebSocketEvent>
   private readonly commandReceiver: ChannelReceiver<WebSocketCommand>
-  private readonly native: NativeWebSocketConnection = NativeWebSocketConnection()
+  private readonly native: NativeWebSocketConnection
 
   state(): WebSocketState {
     return nativeStateToPublic(this.native.state())
@@ -120,6 +129,7 @@ export function createWebSocketConnection(
     capacity: options.commandCapacity,
     keepsAlive: true,
   }
+  native := NativeWebSocketConnection()
 
   connection := WebSocketConnection {
     events,
@@ -127,16 +137,10 @@ export function createWebSocketConnection(
     options,
     eventSender,
     commandReceiver,
+    native,
   }
 
-  commandReceiver.onMessage((command: WebSocketCommand): void => handleWebSocketCommand(connection, command))
-  commandReceiver.onClosed((): void => {
-    ignored := connection.native.close(WEBSOCKET_CLOSE_NORMAL, "")
-  })
-  eventSender.onReady((): void => connection.native.resumeInboundReads())
-  eventSender.onClosed((): void => {
-    ignored := connection.native.close(WEBSOCKET_CLOSE_NORMAL, "")
-  })
+  _attachNativeWebSocketChannels(native, connection, eventSender, commandReceiver)
 
   return connection
 }
@@ -180,9 +184,6 @@ export function upgradeNativeResponderToWebSocket(
   nativeResponder.upgradeToWebSocket(
     connection.native,
     websocketHandshakeResponseText(accept, renderHeaders(connection.options.headers), subprotocol),
-    (event: NativeWebSocketEvent): int => {
-      return emitNativeWebSocketEvent(connection, event)
-    },
   )
 }
 
@@ -198,99 +199,11 @@ export function failWebSocketConnection(
   connection.events.close()
 }
 
-function handleWebSocketCommand(
-  connection: WebSocketConnection,
-  command: WebSocketCommand,
-): void {
-  textCommand := command as WebSocketSendText
-  case textCommand {
-    s: Success -> {
-      reportCommandResult(connection, connection.native.sendText(s.value.text))
-      return
-    }
-    _: Failure -> {}
-  }
-
-  binaryCommand := command as WebSocketSendBinary
-  case binaryCommand {
-    s: Success -> {
-      reportCommandResult(connection, connection.native.sendBinary(s.value.bytes))
-      return
-    }
-    _: Failure -> {}
-  }
-
-  pingCommand := command as WebSocketPing
-  case pingCommand {
-    _: Success -> {
-      reportCommandResult(connection, connection.native.ping())
-      return
-    }
-    _: Failure -> {}
-  }
-
-  closeCommand := command as WebSocketCloseCommand
-  case closeCommand {
-    s: Success -> {
-      reportCommandResult(connection, connection.native.close(s.value.code, s.value.reason))
-      return
-    }
-    _: Failure -> {}
-  }
-}
-
-function reportCommandResult(
-  connection: WebSocketConnection,
-  result: Result<void, string>,
-): void {
-  mapped := mapNativeVoid(result)
-  case mapped {
-    _: Success -> {}
-    f: Failure -> {
-      emitLocalWebSocketEvent(connection, WebSocketError {
-        connection,
-        error: f.error,
-      })
-    }
-  }
-}
-
 function emitLocalWebSocketEvent(
   connection: WebSocketConnection,
   event: WebSocketEvent,
 ): void {
   ignored := connection.eventSender.send(event)
-}
-
-function emitNativeWebSocketEvent(
-  connection: WebSocketConnection,
-  event: NativeWebSocketEvent,
-): int {
-  publicEvent := nativeWebSocketEventToPublic(connection, event)
-  sent := connection.eventSender.send(publicEvent)
-  code := channelSendResultToNativeCode(sent)
-
-  if event.kind() == 4 || event.kind() == 5 {
-    connection.commands.close()
-    connection.events.close()
-  }
-
-  return code
-}
-
-function channelSendResultToNativeCode(
-  sent: Result<Backpressure, SendError>,
-): int {
-  return case sent {
-    s: Success -> case s.value {
-      Backpressure.None -> 0,
-      Backpressure.High -> 1,
-    },
-    f: Failure -> case f.error {
-      SendError.Full -> 2,
-      SendError.Closed -> 3,
-    },
-  }
 }
 
 function websocketHandshakeResponseText(
@@ -323,37 +236,5 @@ function nativeStateToPublic(state: int): WebSocketState {
     2 -> WebSocketState.Closing,
     3 -> WebSocketState.Closed,
     _ -> WebSocketState.Error,
-  }
-}
-
-function nativeWebSocketEventToPublic(
-  connection: WebSocketConnection,
-  event: NativeWebSocketEvent,
-): WebSocketEvent {
-  return case event.kind() {
-    0 -> WebSocketOpen {
-      connection,
-    },
-    1 -> WebSocketText {
-      connection,
-      text: event.text(),
-    },
-    2 -> WebSocketBinary {
-      connection,
-      bytes: event.bytes(),
-    },
-    3 -> WebSocketWritable {
-      connection,
-    },
-    4 -> WebSocketClose {
-      connection,
-      code: event.code(),
-      reason: event.reason(),
-      wasClean: event.wasClean(),
-    },
-    _ -> WebSocketError {
-      connection,
-      error: parseServerError(event.error()),
-    },
   }
 }
