@@ -12,6 +12,12 @@ does not receive responses through the channel. Responses are sent through the
 per-request responder stored inside `Request`, which lets the channel remain a
 bounded delivery queue rather than a bidirectional protocol.
 
+## Documentation
+
+- [Guide and API reference](docs/API.md) explains request delivery, response ownership, compression, WebSockets, timeouts, platform behavior, and API groups.
+- Tests can be run with `doof test http-server`.
+- [Samples](samples/) show complete programs built with this module.
+
 ## Usage
 
 ```doof
