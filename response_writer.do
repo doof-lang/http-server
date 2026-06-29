@@ -105,8 +105,8 @@ class ResponseEncoding {
   readonly name: string
 }
 
-const RESPONSE_ENCODING_GZIP = ResponseEncoding { name: "gzip" }
-const RESPONSE_ENCODING_ZSTD = ResponseEncoding { name: "zstd" }
+readonly RESPONSE_ENCODING_GZIP = ResponseEncoding { name: "gzip" }
+readonly RESPONSE_ENCODING_ZSTD = ResponseEncoding { name: "zstd" }
 
 function responseEncodingForRequest(
   request: ResponseRequestContext,
