@@ -157,7 +157,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (state_ == NativeWebSocketState::Closed || state_ == NativeWebSocketState::Error) {
-                return doof::Result<void, std::string>::failure("closed|websocket is closed");
+                return doof::Failure<std::string>{"closed|websocket is closed"};
             }
             state_ = NativeWebSocketState::Closing;
         }
@@ -174,10 +174,10 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!sender_) {
-                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
+                return doof::Failure<std::string>{"not-open|websocket is not open"};
             }
             if (state_ != NativeWebSocketState::Open && !(opcode == 0x8 && state_ == NativeWebSocketState::Closing)) {
-                return doof::Result<void, std::string>::failure("not-open|websocket is not open");
+                return doof::Failure<std::string>{"not-open|websocket is not open"};
             }
             sender = sender_;
         }

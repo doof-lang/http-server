@@ -58,12 +58,12 @@ inline void closeSocket(int fd) {
 inline doof::Result<void, std::string> setNonBlocking(int fd) {
     const int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags < 0) {
-        return doof::Result<void, std::string>::failure(errnoMessage("failed to read socket flags"));
+        return doof::Failure<std::string>{errnoMessage("failed to read socket flags")};
     }
     if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
-        return doof::Result<void, std::string>::failure(errnoMessage("failed to set socket nonblocking"));
+        return doof::Failure<std::string>{errnoMessage("failed to set socket nonblocking")};
     }
-    return doof::Result<void, std::string>::success();
+    return doof::Success<void>{};
 }
 
 }  // namespace detail

@@ -55,18 +55,18 @@ public:
 
     doof::Result<void, std::string> start() override {
         if (kqueueFd_ < 0 || wakeReadFd_ < 0 || wakeWriteFd_ < 0) {
-            return doof::Result<void, std::string>::failure("reactor|failed to initialize kqueue wakeup resources");
+            return doof::Failure<std::string>{"reactor|failed to initialize kqueue wakeup resources"};
         }
         struct kevent wakeEvent;
         EV_SET(&wakeEvent, wakeReadFd_, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
         if (::kevent(kqueueFd_, &wakeEvent, 1, nullptr, 0, nullptr) != 0) {
-            return doof::Result<void, std::string>::failure("reactor|" + errnoMessage("failed to register reactor wakeup"));
+            return doof::Failure<std::string>{"reactor|" + errnoMessage("failed to register reactor wakeup")};
         }
         running_ = true;
         thread_ = std::thread([this] {
             run();
         });
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     void stop() override {
@@ -259,12 +259,12 @@ public:
 
     doof::Result<void, std::string> start() override {
         if (wakeReadFd_ < 0 || wakeWriteFd_ < 0) {
-            return doof::Result<void, std::string>::failure("reactor|failed to initialize poll wakeup resources");
+            return doof::Failure<std::string>{"reactor|failed to initialize poll wakeup resources"};
         }
         thread_ = std::thread([this] {
             run();
         });
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     void stop() override {
@@ -450,9 +450,9 @@ private:
 
 inline doof::Result<std::shared_ptr<Reactor>, std::string> createPlatformReactor() {
 #if defined(__APPLE__)
-    return doof::Result<std::shared_ptr<Reactor>, std::string>::success(std::make_shared<KqueueReactor>());
+    return doof::Success<std::shared_ptr<Reactor>>{std::make_shared<KqueueReactor>()};
 #else
-    return doof::Result<std::shared_ptr<Reactor>, std::string>::success(std::make_shared<PollReactor>());
+    return doof::Success<std::shared_ptr<Reactor>>{std::make_shared<PollReactor>()};
 #endif
 }
 

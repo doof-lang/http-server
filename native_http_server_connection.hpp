@@ -49,7 +49,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_) {
-                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+                return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
             writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
             closeAfterWrite_ = closeAfterWrite_ || !keepAlive;
@@ -60,9 +60,9 @@ public:
             self->armWriteInterest();
         })) {
             closeFromServer();
-            return doof::Result<void, std::string>::failure("closed|server is no longer accepting work");
+            return doof::Failure<std::string>{"closed|server is no longer accepting work"};
         }
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     doof::Result<void, std::string> enqueueStreamResponseHead(
@@ -73,7 +73,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_) {
-                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+                return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
             streamingResponse_ = true;
             streamResponseKeepAlive_ = keepAlive;
@@ -85,9 +85,9 @@ public:
             self->armWriteInterest();
         })) {
             closeFromServer();
-            return doof::Result<void, std::string>::failure("closed|server is no longer accepting work");
+            return doof::Failure<std::string>{"closed|server is no longer accepting work"};
         }
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     doof::Result<void, std::string> enqueueStreamResponseBytes(
@@ -97,7 +97,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !streamingResponse_ || closeAfterWrite_) {
-                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+                return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
             if (!safeBytes->empty()) {
                 writeBuffer_.insert(writeBuffer_.end(), safeBytes->begin(), safeBytes->end());
@@ -107,7 +107,7 @@ public:
         if (!safeBytes->empty()) {
             armWriteInterest();
         }
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     doof::Result<void, std::string> enqueueStreamResponseEnd(
@@ -117,14 +117,14 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !streamingResponse_ || closeAfterWrite_) {
-                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+                return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
             writeBuffer_.insert(writeBuffer_.end(), safeBytes->begin(), safeBytes->end());
             streamingResponse_ = false;
             closeAfterWrite_ = closeAfterWrite_ || !streamResponseKeepAlive_;
         }
         armWriteInterest();
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     doof::Result<void, std::string> enqueueWebSocketUpgrade(
@@ -132,14 +132,14 @@ public:
         const std::string& responseText
     ) {
         if (!websocket) {
-            return doof::Result<void, std::string>::failure("websocket|missing websocket connection");
+            return doof::Failure<std::string>{"websocket|missing websocket connection"};
         }
 
         auto bytes = std::vector<uint8_t>(responseText.begin(), responseText.end());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_ || websocketMode_) {
-                return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+                return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
             websocketMode_ = true;
             awaitingResponse_ = false;
@@ -178,7 +178,7 @@ public:
         );
         handleWebSocketEventPressure(websocket->markOpen());
         armWriteInterest();
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     doof::Result<void, std::string> enqueueWebSocketFrame(
@@ -190,30 +190,30 @@ public:
         std::vector<uint8_t> framePayload;
         if (opcode == 0x8) {
             if (closeReason.size() > 123) {
-                return doof::Result<void, std::string>::failure("invalid-close|websocket close reason exceeds 123 bytes");
+                return doof::Failure<std::string>{"invalid-close|websocket close reason exceeds 123 bytes"};
             }
             framePayload = detail::closePayload(closeCode, closeReason);
         } else if (payload) {
             framePayload = *payload;
         }
         if ((opcode == 0x9 || opcode == 0xA) && framePayload.size() > 125) {
-            return doof::Result<void, std::string>::failure("frame-too-large|websocket control frame exceeds 125 bytes");
+            return doof::Failure<std::string>{"frame-too-large|websocket control frame exceeds 125 bytes"};
         }
         if (opcode != 0x8 && static_cast<int64_t>(framePayload.size()) > maxBodyBytes_) {
-            return doof::Result<void, std::string>::failure("message-too-large|websocket message exceeds configured maxBodyBytes");
+            return doof::Failure<std::string>{"message-too-large|websocket message exceeds configured maxBodyBytes"};
         }
 
         auto bytes = detail::websocketFrame(static_cast<uint8_t>(opcode), framePayload);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !websocketMode_) {
-                return doof::Result<void, std::string>::failure("closed|websocket is closed");
+                return doof::Failure<std::string>{"closed|websocket is closed"};
             }
             writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
             closeAfterWrite_ = closeAfterWrite_ || opcode == 0x8;
         }
         armWriteInterest();
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
     void onReadable() override {
@@ -646,23 +646,21 @@ inline doof::Result<void, std::string> NativeResponder::respond(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (completed_) {
-            return doof::Result<void, std::string>::failure(
-                responseWritten_ ? "already-responded|request has already been responded to"
-                                 : "disconnected|request is no longer writable"
-            );
+            return doof::Failure<std::string>{responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"};
         }
         completed_ = true;
         connection = connection_;
     }
 
     if (!connection) {
-        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+        return doof::Failure<std::string>{"disconnected|request is no longer writable"};
     }
 
     auto result = connection->enqueueResponse(responseText, body, keepAlive);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        responseWritten_ = result.isSuccess();
+        responseWritten_ = doof::is_success(result);
         connection_.reset();
     }
     return result;
@@ -676,10 +674,8 @@ inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (completed_) {
-            return doof::Result<void, std::string>::failure(
-                responseWritten_ ? "already-responded|request has already been responded to"
-                                 : "disconnected|request is no longer writable"
-            );
+            return doof::Failure<std::string>{responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"};
         }
         completed_ = true;
         streamingResponse_ = true;
@@ -687,11 +683,11 @@ inline doof::Result<void, std::string> NativeResponder::beginStreamResponse(
     }
 
     if (!connection) {
-        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+        return doof::Failure<std::string>{"disconnected|request is no longer writable"};
     }
 
     auto result = connection->enqueueStreamResponseHead(responseText, keepAlive);
-    if (result.isFailure()) {
+    if (doof::is_failure(result)) {
         std::lock_guard<std::mutex> lock(mutex_);
         streamingResponse_ = false;
         connection_.reset();
@@ -706,16 +702,14 @@ inline doof::Result<void, std::string> NativeResponder::writeStreamBytes(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!streamingResponse_) {
-            return doof::Result<void, std::string>::failure(
-                responseWritten_ ? "already-responded|request has already been responded to"
-                                 : "disconnected|request is no longer writable"
-            );
+            return doof::Failure<std::string>{responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"};
         }
         connection = connection_;
     }
 
     if (!connection) {
-        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+        return doof::Failure<std::string>{"disconnected|request is no longer writable"};
     }
     return connection->enqueueStreamResponseBytes(bytes);
 }
@@ -727,23 +721,21 @@ inline doof::Result<void, std::string> NativeResponder::endStreamResponse(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!streamingResponse_) {
-            return doof::Result<void, std::string>::failure(
-                responseWritten_ ? "already-responded|request has already been responded to"
-                                 : "disconnected|request is no longer writable"
-            );
+            return doof::Failure<std::string>{responseWritten_ ? "already-responded|request has already been responded to"
+                                 : "disconnected|request is no longer writable"};
         }
         connection = connection_;
     }
 
     if (!connection) {
-        return doof::Result<void, std::string>::failure("disconnected|request is no longer writable");
+        return doof::Failure<std::string>{"disconnected|request is no longer writable"};
     }
 
     auto result = connection->enqueueStreamResponseEnd(bytes);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         streamingResponse_ = false;
-        responseWritten_ = result.isSuccess();
+        responseWritten_ = doof::is_success(result);
         connection_.reset();
     }
     return result;
@@ -779,11 +771,11 @@ inline void NativeResponder::upgradeToWebSocket(
     auto result = connection->enqueueWebSocketUpgrade(websocket, responseText);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        responseWritten_ = result.isSuccess();
+        responseWritten_ = doof::is_success(result);
         connection_.reset();
     }
-    if (result.isFailure() && websocket) {
-        websocket->markError(result.error());
+    if (doof::is_failure(result) && websocket) {
+        websocket->markError(doof::failure_error(result));
     }
 }
 

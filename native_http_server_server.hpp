@@ -17,22 +17,22 @@ public:
     ) {
         detail::ignoreSigpipe();
         if (host.empty()) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("bind|host cannot be empty");
+            return doof::Failure<std::string>{"bind|host cannot be empty"};
         }
         if (port < 0 || port > 65535) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("bind|port must be between 0 and 65535");
+            return doof::Failure<std::string>{"bind|port must be between 0 and 65535"};
         }
         if (maxBodyBytes < 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|maxBodyBytes must not be negative");
+            return doof::Failure<std::string>{"config|maxBodyBytes must not be negative"};
         }
         if (idleTimeoutMillis < 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|idleTimeoutMillis must not be negative");
+            return doof::Failure<std::string>{"config|idleTimeoutMillis must not be negative"};
         }
         if (responseTimeoutMillis < 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|responseTimeoutMillis must not be negative");
+            return doof::Failure<std::string>{"config|responseTimeoutMillis must not be negative"};
         }
         if (maxRequestsPerConnection < 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("config|maxRequestsPerConnection must not be negative");
+            return doof::Failure<std::string>{"config|maxRequestsPerConnection must not be negative"};
         }
 
         addrinfo hints {};
@@ -44,9 +44,7 @@ public:
         const std::string portText = std::to_string(port);
         const int lookup = ::getaddrinfo(host.c_str(), portText.c_str(), &hints, &addresses);
         if (lookup != 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure(
-                "bind|failed to resolve host: " + std::string(gai_strerror(lookup))
-            );
+            return doof::Failure<std::string>{"bind|failed to resolve host: " + std::string(gai_strerror(lookup))};
         }
 
         int listenFd = -1;
@@ -72,9 +70,7 @@ public:
         ::freeaddrinfo(addresses);
 
         if (listenFd < 0) {
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure(
-                "bind|" + (lastBindError.empty() ? "failed to bind listener" : lastBindError)
-            );
+            return doof::Failure<std::string>{"bind|" + (lastBindError.empty() ? "failed to bind listener" : lastBindError)};
         }
 
         sockaddr_in bound {};
@@ -82,13 +78,13 @@ public:
         if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&bound), &boundLength) != 0) {
             const std::string error = detail::errnoMessage("failed to inspect listener");
             detail::closeSocket(listenFd);
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure("listen|" + error);
+            return doof::Failure<std::string>{"listen|" + error};
         }
 
         auto reactorResult = detail::createPlatformReactor();
-        if (reactorResult.isFailure()) {
+        if (doof::is_failure(reactorResult)) {
             detail::closeSocket(listenFd);
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure(reactorResult.error());
+            return doof::Failure<std::string>{doof::failure_error(reactorResult)};
         }
 
         auto server = std::shared_ptr<NativeHttpServer>(
@@ -101,16 +97,16 @@ public:
                 maxRequestsPerConnection,
                 std::move(onRequest),
                 listenFd,
-                reactorResult.value()
+                doof::success_value(reactorResult)
             )
         );
         auto started = server->start();
-        if (started.isFailure()) {
+        if (doof::is_failure(started)) {
             detail::closeSocket(listenFd);
-            return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::failure(started.error());
+            return doof::Failure<std::string>{doof::failure_error(started)};
         }
         retain(server);
-        return doof::Result<std::shared_ptr<NativeHttpServer>, std::string>::success(std::move(server));
+        return doof::Success<std::shared_ptr<NativeHttpServer>>{std::move(server)};
     }
 
     ~NativeHttpServer() {
@@ -142,7 +138,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_) {
-                return doof::Result<void, std::string>::failure("closed|server has already been closed");
+                return doof::Failure<std::string>{"closed|server has already been closed"};
             }
             closed_ = true;
             listenFd = listenFd_;
@@ -161,7 +157,7 @@ public:
         }
 
         release(this);
-        return doof::Result<void, std::string>::success();
+        return doof::Success<void>{};
     }
 
 private:
@@ -188,11 +184,11 @@ private:
 
     doof::Result<void, std::string> start() {
         auto nonBlocking = detail::setNonBlocking(listenFd_);
-        if (nonBlocking.isFailure()) {
+        if (doof::is_failure(nonBlocking)) {
             return nonBlocking;
         }
         if (!reactor_->addHandler(shared_from_this(), true, false)) {
-            return doof::Result<void, std::string>::failure("reactor|failed to register listener");
+            return doof::Failure<std::string>{"reactor|failed to register listener"};
         }
         return reactor_->start();
     }
@@ -204,7 +200,7 @@ private:
             const int clientFd = ::accept(listenFd_, reinterpret_cast<sockaddr*>(&peer), &peerLength);
             if (clientFd >= 0) {
                 auto nonBlocking = detail::setNonBlocking(clientFd);
-                if (nonBlocking.isFailure()) {
+                if (doof::is_failure(nonBlocking)) {
                     detail::closeSocket(clientFd);
                     continue;
                 }

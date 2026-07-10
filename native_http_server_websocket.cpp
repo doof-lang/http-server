@@ -77,26 +77,26 @@ void NativeWebSocketConnection::attachChannels(
 
 void NativeWebSocketConnection::handleCommand(PublicCommand command) {
     pauseCommandChannel();
-    doof::Result<void, std::string> result = doof::Result<void, std::string>::success();
+    doof::Result<void, std::string> result = doof::Success<void>{};
     bool waitsForWritable = false;
 
     if (auto* text = std::get_if<std::shared_ptr<std_::http_server::websocket::WebSocketSendText>>(&command)) {
         result = sendRaw(0x1, bytesFromString((*text)->text), 0, "");
-        waitsForWritable = result.isSuccess();
+        waitsForWritable = doof::is_success(result);
     } else if (auto* binary = std::get_if<std::shared_ptr<std_::http_server::websocket::WebSocketSendBinary>>(&command)) {
         result = sendRaw(0x2, (*binary)->bytes, 0, "");
-        waitsForWritable = result.isSuccess();
+        waitsForWritable = doof::is_success(result);
     } else if (std::holds_alternative<std::shared_ptr<std_::http_server::websocket::WebSocketPing>>(command)) {
         result = sendRaw(0x9, std::make_shared<std::vector<uint8_t>>(), 0, "");
-        waitsForWritable = result.isSuccess();
+        waitsForWritable = doof::is_success(result);
     } else if (auto* closeCommand = std::get_if<std::shared_ptr<std_::http_server::websocket::WebSocketCloseCommand>>(&command)) {
         result = close((*closeCommand)->code, (*closeCommand)->reason);
-        waitsForWritable = result.isSuccess();
+        waitsForWritable = doof::is_success(result);
     }
 
-    if (result.isFailure()) {
+    if (doof::is_failure(result)) {
         resumeCommandChannel();
-        emitErrorToPublicChannel(result.error());
+        emitErrorToPublicChannel(doof::failure_error(result));
         return;
     }
     if (!waitsForWritable) {
