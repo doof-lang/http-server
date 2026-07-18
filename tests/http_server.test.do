@@ -22,25 +22,25 @@ import {
 } from "../index"
 
 import class NativeHttpTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpTestRequest {
-  static start(host: string, port: int, requestText: string): NativeHttpTestRequest
-  wait(): string
-  waitBytes(): readonly byte[]
+  isolated static start(host: string, port: int, requestText: string): NativeHttpTestRequest
+  isolated wait(): string
+  isolated waitBytes(): readonly byte[]
 }
 
 import class NativeHttpSlowTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpSlowTestRequest {
-  static start(host: string, port: int, firstChunk: string, secondChunk: string, delayMillis: int): NativeHttpSlowTestRequest
-  wait(): string
+  isolated static start(host: string, port: int, firstChunk: string, secondChunk: string, delayMillis: int): NativeHttpSlowTestRequest
+  isolated wait(): string
 }
 
 import class NativeHttpRequestParserFuzz from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpRequestParserFuzz {
-  static parse(requestText: string, maxBodyBytes: long): string
+  isolated static parse(requestText: string, maxBodyBytes: long): string
 }
 
 import class NativeWebSocketTestClient from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeWebSocketTestClient {
-  static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
-  static startExchangeThreeTexts(host: string, port: int, requestText: string, first: string, second: string, third: string): NativeWebSocketTestClient
-  static startHandshakeOnly(host: string, port: int, requestText: string): NativeWebSocketTestClient
-  wait(): string
+  isolated static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
+  isolated static startExchangeThreeTexts(host: string, port: int, requestText: string, first: string, second: string, third: string): NativeWebSocketTestClient
+  isolated static startHandshakeOnly(host: string, port: int, requestText: string): NativeWebSocketTestClient
+  isolated wait(): string
 }
 
 class DispatchState {

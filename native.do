@@ -1,40 +1,40 @@
 import { BlobBuilder } from "std/blob"
 
 export import class NativeExchange from "./native_http_server.hpp" as doof_http_server::NativeExchange {
-  method(): string
-  target(): string
-  version(): string
-  headersText(): string
-  body(): readonly byte[]
-  keepAlive(): bool
-  responder(): NativeResponder
+  isolated method(): string
+  isolated target(): string
+  isolated version(): string
+  isolated headersText(): string
+  isolated body(): readonly byte[]
+  isolated keepAlive(): bool
+  isolated responder(): NativeResponder
 }
 
 export import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
-  respond(responseText: string, body: readonly byte[], keepAlive: bool): Result<void, string>
-  beginStreamResponse(responseText: string, keepAlive: bool): Result<void, string>
-  writeStreamBytes(bytes: readonly byte[]): Result<void, string>
-  endStreamResponse(bytes: readonly byte[]): Result<void, string>
-  upgradeToWebSocket(
+  isolated respond(responseText: string, body: readonly byte[], keepAlive: bool): Result<void, string>
+  isolated beginStreamResponse(responseText: string, keepAlive: bool): Result<void, string>
+  isolated writeStreamBytes(bytes: readonly byte[]): Result<void, string>
+  isolated endStreamResponse(bytes: readonly byte[]): Result<void, string>
+  isolated upgradeToWebSocket(
     websocket: NativeWebSocketConnection,
     responseText: string,
   ): void
 }
 
 export import class NativeWebSocketEvent from "./native_http_server.hpp" as doof_http_server::NativeWebSocketEvent {
-  kind(): int
-  text(): string
-  bytes(): readonly byte[]
-  code(): int
-  reason(): string
-  wasClean(): bool
-  error(): string
+  isolated kind(): int
+  isolated text(): string
+  isolated bytes(): readonly byte[]
+  isolated code(): int
+  isolated reason(): string
+  isolated wasClean(): bool
+  isolated error(): string
 }
 
 export import class NativeWebSocketConnection from "./native_http_server.hpp" as doof_http_server::NativeWebSocketConnection {
-  static constructor(): NativeWebSocketConnection
+  isolated static constructor(): NativeWebSocketConnection
 
-  sendRaw(
+  isolated sendRaw(
     opcode: int,
     payload: readonly byte[],
     closeCode: int,
@@ -53,13 +53,13 @@ export import class NativeWebSocketConnection from "./native_http_server.hpp" as
     return this.sendRaw(9, emptyBytes(), 0, "")
   }
 
-  close(code: int, reason: string): Result<void, string>
-  resumeInboundReads(): void
-  state(): int
+  isolated close(code: int, reason: string): Result<void, string>
+  isolated resumeInboundReads(): void
+  isolated state(): int
 }
 
 export import class NativeHttpServer from "./native_http_server.hpp" as doof_http_server::NativeHttpServer {
-  static listen(
+  isolated static listen(
     host: string,
     port: int,
     maxBodyBytes: long,
@@ -69,9 +69,9 @@ export import class NativeHttpServer from "./native_http_server.hpp" as doof_htt
     onRequest: (exchange: NativeExchange): int,
   ): Result<NativeHttpServer, string>
 
-  host(): string
-  port(): int
-  close(): Result<void, string>
+  isolated host(): string
+  isolated port(): int
+  isolated close(): Result<void, string>
 }
 
 function encodeText(text: string): readonly byte[] {

@@ -7,7 +7,7 @@ import { headersAreSafe, renderHeaders } from "./headers"
 import { NativeResponder, NativeWebSocketConnection } from "./native"
 import { validateWebSocketHandshake } from "./websocket_internal"
 
-import function _attachNativeWebSocketChannels(
+import isolated function _attachNativeWebSocketChannels(
   native: NativeWebSocketConnection,
   connection: WebSocketConnection,
   eventSender: ChannelSender<WebSocketEvent>,
