@@ -18,16 +18,16 @@ export class Request {
   readonly headers: readonly HttpHeader[]
   readonly body: readonly byte[]
   private readonly keepAlive: bool = false
-  private readonly responder: NativeResponder | null = null
+  private readonly responder: NativeResponder | none = none
 
-  header(name: string): string | null {
+  header(name: string): string | none {
     lowerName := name.toLowerCase()
     for entry of this.headers {
       if entry.name.toLowerCase() == lowerName {
         return entry.value
       }
     }
-    return null
+    return none
   }
 
   headerValues(name: string): readonly string[] {
@@ -61,7 +61,7 @@ export class Request {
     return parseJsonValue(this.getText())
   }
 
-  respond(response: Response): Result<void, ServerError> {
+  respond(response: Response): Result<none, ServerError> {
     nativeResponder := this.responder else {
       return Failure {
         error: ServerError {
@@ -90,7 +90,7 @@ export class Request {
     )
   }
 
-  upgradeToWebSocket(connection: WebSocketConnection): void {
+  upgradeToWebSocket(connection: WebSocketConnection): none {
     nativeResponder := this.responder else {
       failWebSocketConnection(connection, ServerError {
         kind: "missing-responder",

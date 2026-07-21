@@ -11,14 +11,14 @@ export import class NativeExchange from "./native_http_server.hpp" as doof_http_
 }
 
 export import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
-  isolated respond(responseText: string, body: readonly byte[], keepAlive: bool): Result<void, string>
-  isolated beginStreamResponse(responseText: string, keepAlive: bool): Result<void, string>
-  isolated writeStreamBytes(bytes: readonly byte[]): Result<void, string>
-  isolated endStreamResponse(bytes: readonly byte[]): Result<void, string>
+  isolated respond(responseText: string, body: readonly byte[], keepAlive: bool): Result<none, string>
+  isolated beginStreamResponse(responseText: string, keepAlive: bool): Result<none, string>
+  isolated writeStreamBytes(bytes: readonly byte[]): Result<none, string>
+  isolated endStreamResponse(bytes: readonly byte[]): Result<none, string>
   isolated upgradeToWebSocket(
     websocket: NativeWebSocketConnection,
     responseText: string,
-  ): void
+  ): none
 }
 
 export import class NativeWebSocketEvent from "./native_http_server.hpp" as doof_http_server::NativeWebSocketEvent {
@@ -39,22 +39,22 @@ export import class NativeWebSocketConnection from "./native_http_server.hpp" as
     payload: readonly byte[],
     closeCode: int,
     closeReason: string,
-  ): Result<void, string>
+  ): Result<none, string>
 
-  sendText(text: string): Result<void, string> {
+  sendText(text: string): Result<none, string> {
     return this.sendRaw(1, encodeText(text), 0, "")
   }
 
-  sendBinary(bytes: readonly byte[]): Result<void, string> {
+  sendBinary(bytes: readonly byte[]): Result<none, string> {
     return this.sendRaw(2, bytes, 0, "")
   }
 
-  ping(): Result<void, string> {
+  ping(): Result<none, string> {
     return this.sendRaw(9, emptyBytes(), 0, "")
   }
 
-  isolated close(code: int, reason: string): Result<void, string>
-  isolated resumeInboundReads(): void
+  isolated close(code: int, reason: string): Result<none, string>
+  isolated resumeInboundReads(): none
   isolated state(): int
 }
 
@@ -71,7 +71,7 @@ export import class NativeHttpServer from "./native_http_server.hpp" as doof_htt
 
   isolated host(): string
   isolated port(): int
-  isolated close(): Result<void, string>
+  isolated close(): Result<none, string>
 }
 
 function encodeText(text: string): readonly byte[] {

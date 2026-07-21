@@ -51,14 +51,14 @@ export function hasHeader(headers: readonly HttpHeader[], name: string): bool {
   return false
 }
 
-export function headerValue(headers: readonly HttpHeader[], name: string): string | null {
+export function headerValue(headers: readonly HttpHeader[], name: string): string | none {
   lowerName := name.toLowerCase()
   for header of headers {
     if header.name.toLowerCase() == lowerName {
       return header.value
     }
   }
-  return null
+  return none
 }
 
 export function headerContainsTokenValue(value: string, token: string): bool {

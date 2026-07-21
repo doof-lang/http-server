@@ -19,7 +19,7 @@ function main(args: string[]): int {
     keepsAlive: true,
   }
 
-  requestReceiver.onMessage((request: Request): void => {
+  requestReceiver.onMessage((request: Request): none => {
     response := router.handle(request) ?? Response.text(404, "not found\n")
     try! request.respond(response)
   })

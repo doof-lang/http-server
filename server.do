@@ -46,7 +46,7 @@ export class Server {
     }
   }
 
-  close(): Result<void, ServerError> {
+  close(): Result<none, ServerError> {
     return mapNativeVoid(this.native.close())
   }
 }

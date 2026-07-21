@@ -44,7 +44,7 @@ export function validateWebSocketHandshake(
   return Success { value: accept }
 }
 
-function headerValue(headersText: string, wantedName: string): string | null {
+function headerValue(headersText: string, wantedName: string): string | none {
   lowerWanted := wantedName.toLowerCase()
   let remaining = headersText
   while remaining.length > 0 {
@@ -66,7 +66,7 @@ function headerValue(headersText: string, wantedName: string): string | null {
       return line.slice(separator + 1).trim()
     }
   }
-  return null
+  return none
 }
 
 function headerValueHasToken(value: string, wanted: string): bool {

@@ -17,7 +17,7 @@ export function respondToNative(
   nativeResponder: NativeResponder,
   request: ResponseRequestContext,
   response: Response,
-): Result<void, ServerError> {
+): Result<none, ServerError> {
   return case response.body {
     body: readonly byte[] -> respondWithBytes(nativeResponder, request, response, body),
     body: Stream<readonly byte[]> -> respondWithStream(nativeResponder, request, response, body),
@@ -111,9 +111,9 @@ readonly RESPONSE_ENCODING_ZSTD = ResponseEncoding { name: "zstd" }
 function responseEncodingForRequest(
   request: ResponseRequestContext,
   response: Response,
-): ResponseEncoding | null {
+): ResponseEncoding | none {
   if hasHeader(response.headers, "Content-Encoding") {
-    return null
+    return none
   }
 
   enabled := case response.compression {
@@ -122,7 +122,7 @@ function responseEncodingForRequest(
     ResponseCompression.Default -> isDefaultCompressible(response.headers),
   }
   if !enabled {
-    return null
+    return none
   }
 
   if requestAcceptsEncoding(request, RESPONSE_ENCODING_ZSTD.name) {
@@ -131,7 +131,7 @@ function responseEncodingForRequest(
   if requestAcceptsEncoding(request, RESPONSE_ENCODING_GZIP.name) {
     return RESPONSE_ENCODING_GZIP
   }
-  return null
+  return none
 }
 
 function compressedBytes(
@@ -225,8 +225,8 @@ function respondWithBytes(
   request: ResponseRequestContext,
   response: Response,
   body: readonly byte[],
-): Result<void, ServerError> {
-  let finalResponse: ByteResponse | null = null
+): Result<none, ServerError> {
+  let finalResponse: ByteResponse | none = none
   case byteResponseForRequest(request, response, body) {
     s: Success -> {
       finalResponse = s.value
@@ -248,7 +248,7 @@ function respondWithStream(
   request: ResponseRequestContext,
   response: Response,
   body: Stream<readonly byte[]>,
-): Result<void, ServerError> {
+): Result<none, ServerError> {
   finalResponse := streamResponseForRequest(request, response, body)
   keepAlive := responseKeepAlive(request, finalResponse.headers)
 

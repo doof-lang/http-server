@@ -12,7 +12,7 @@ import isolated function _attachNativeWebSocketChannels(
   connection: WebSocketConnection,
   eventSender: ChannelSender<WebSocketEvent>,
   commandReceiver: ChannelReceiver<WebSocketCommand>,
-): void from "./native_http_server.hpp" as doof_http_server::attachWebSocketChannels
+): none from "./native_http_server.hpp" as doof_http_server::attachWebSocketChannels
 
 export enum WebSocketState {
   Connecting,
@@ -35,7 +35,7 @@ export class WebSocketOptions {
   readonly eventCapacity: int = 1024
   readonly commandCapacity: int = 1024
   readonly headers: readonly HttpHeader[] = []
-  readonly subprotocol: string | null = null
+  readonly subprotocol: string | none = none
 }
 
 export type WebSocketEvent =
@@ -84,12 +84,12 @@ export class WebSocketError {
 
 export class WebSocketSendText {
   readonly text: string
-  readonly coalesceKey: string | null = null
+  readonly coalesceKey: string | none = none
 }
 
 export class WebSocketSendBinary {
   readonly bytes: readonly byte[]
-  readonly coalesceKey: string | null = null
+  readonly coalesceKey: string | none = none
 }
 
 export class WebSocketPing {
@@ -112,7 +112,7 @@ export class WebSocketConnection {
     return nativeStateToPublic(this.native.state())
   }
 
-  close(): void {
+  close(): none {
     this.commands.close()
     this.events.close()
   }
@@ -151,7 +151,7 @@ export function upgradeNativeResponderToWebSocket(
   version: string,
   requestHeadersText: string,
   connection: WebSocketConnection,
-): void {
+): none {
   if !headersAreSafe(connection.options.headers) {
     failWebSocketConnection(
       connection,
@@ -190,7 +190,7 @@ export function upgradeNativeResponderToWebSocket(
 export function failWebSocketConnection(
   connection: WebSocketConnection,
   error: ServerError,
-): void {
+): none {
   emitLocalWebSocketEvent(connection, WebSocketError {
     connection,
     error,
@@ -202,7 +202,7 @@ export function failWebSocketConnection(
 function emitLocalWebSocketEvent(
   connection: WebSocketConnection,
   event: WebSocketEvent,
-): void {
+): none {
   ignored := connection.eventSender.send(event)
 }
 

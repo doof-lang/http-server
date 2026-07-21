@@ -18,7 +18,7 @@ export function parseServerError(raw: string): ServerError {
   }
 }
 
-export function mapNativeVoid(result: Result<void, string>): Result<void, ServerError> {
+export function mapNativeVoid(result: Result<none, string>): Result<none, ServerError> {
   return case result {
     _: Success -> Success {},
     f: Failure -> Failure {
