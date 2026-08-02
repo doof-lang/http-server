@@ -18,7 +18,7 @@ export function parseHeaders(headerText: string): readonly HttpHeader[] {
       value: line.slice(separator + 1).trim(),
     })
   }
-  return headers.buildReadonly()
+  return headers.drainToReadonly()
 }
 
 export function renderHeaders(headers: readonly HttpHeader[]): string {
@@ -92,7 +92,7 @@ export function withHeader(headers: readonly HttpHeader[], name: string, value: 
     name,
     value,
   })
-  return merged.buildReadonly()
+  return merged.drainToReadonly()
 }
 
 export function withVaryAcceptEncoding(headers: readonly HttpHeader[]): readonly HttpHeader[] {
@@ -114,5 +114,5 @@ export function withVaryAcceptEncoding(headers: readonly HttpHeader[]): readonly
       merged.push(header)
     }
   }
-  return merged.buildReadonly()
+  return merged.drainToReadonly()
 }

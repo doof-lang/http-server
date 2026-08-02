@@ -44,49 +44,49 @@ import class NativeWebSocketTestClient from "../native_http_server_test_support.
 }
 
 class DispatchState {
-  method: string = ""
-  target: string = ""
-  path: string = ""
-  query: string = ""
-  host: string = ""
-  body: string = ""
+  let method: string = ""
+  let target: string = ""
+  let path: string = ""
+  let query: string = ""
+  let host: string = ""
+  let body: string = ""
 }
 
 class OneShotState {
-  secondKind: string = ""
+  let secondKind: string = ""
 }
 
 class KeepAliveState {
-  count: int = 0
-  firstPath: string = ""
-  secondPath: string = ""
+  let count: int = 0
+  let firstPath: string = ""
+  let secondPath: string = ""
 }
 
 class SingleResponseState {
-  count: int = 0
-  secondKind: string = ""
+  let count: int = 0
+  let secondKind: string = ""
 }
 
 class WebSocketTestState {
-  openCount: int = 0
-  textCount: int = 0
-  text: string = ""
-  closeCode: int = 0
-  errorKind: string = ""
-  errorMessage: string = ""
-  upgradeAttempt: bool = false
+  let openCount: int = 0
+  let textCount: int = 0
+  let text: string = ""
+  let closeCode: int = 0
+  let errorKind: string = ""
+  let errorMessage: string = ""
+  let upgradeAttempt: bool = false
 }
 
 class ParserCase {
-  name: string = ""
-  requestText: string = ""
-  expectedPrefix: string = ""
+  let name: string = ""
+  let requestText: string = ""
+  let expectedPrefix: string = ""
 }
 
 class TestByteStream implements Stream<readonly byte[]> {
   chunks: string[]
-  index: int = 0
-  currentValue: readonly byte[] = []
+  let index: int = 0
+  let currentValue: readonly byte[] = []
 
   next(): bool {
     if this.index >= this.chunks.length {

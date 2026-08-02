@@ -38,7 +38,7 @@ export class Request {
         values.push(entry.value)
       }
     }
-    return values.buildReadonly()
+    return values.drainToReadonly()
   }
 
   isWebSocketUpgrade(): bool {

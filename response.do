@@ -112,7 +112,7 @@ function withDefaultContentType(
     name: "Content-Type",
     value: contentType,
   })
-  return merged.buildReadonly()
+  return merged.drainToReadonly()
 }
 
 function encodeText(text: string): readonly byte[] {
