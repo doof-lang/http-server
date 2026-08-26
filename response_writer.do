@@ -98,7 +98,7 @@ class ByteResponse {
 class StreamResponse {
   readonly status: int
   readonly headers: readonly HttpHeader[]
-  readonly body: Stream<readonly byte[]>
+  body: Stream<readonly byte[]>
 }
 
 class ResponseEncoding {

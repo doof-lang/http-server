@@ -13,7 +13,7 @@ export enum ResponseCompression {
 export class Response {
   readonly status: int
   readonly headers: readonly HttpHeader[]
-  readonly body: readonly byte[] | Stream<readonly byte[]>
+  body: readonly byte[] | Stream<readonly byte[]>
   readonly compression: ResponseCompression = ResponseCompression.Default
 
   static empty(status: int = 204): Response {

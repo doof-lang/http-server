@@ -149,8 +149,8 @@ public:
         return static_cast<int32_t>(state_);
     }
 
-    doof::Result<void, std::string> sendText(std::string text);
-    doof::Result<void, std::string> sendBinary(std::shared_ptr<std::vector<uint8_t>> bytes);
+    doof::Result<void, std::string> sendText(const std::string& text);
+    doof::Result<void, std::string> sendBinary(const std::shared_ptr<std::vector<uint8_t>>& bytes);
     doof::Result<void, std::string> ping();
 
     doof::Result<void, std::string> close(int32_t code, const std::string& reason) {
