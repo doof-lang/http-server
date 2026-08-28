@@ -21,24 +21,11 @@ std::shared_ptr<std::vector<uint8_t>> bytesFromString(const std::string& text) {
 
 namespace doof_http_server {
 
-void attachWebSocketChannels(
-    std::shared_ptr<NativeWebSocketConnection> native,
+void NativeWebSocketConnection::attachNativeChannels(
     std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-    std::shared_ptr<NativeWebSocketConnection::EventSender> eventSender,
-    std::shared_ptr<NativeWebSocketConnection::CommandReceiver> commandReceiver
+    std::shared_ptr<doof_event::NativeChannel> eventChannel,
+    std::shared_ptr<doof_event::NativeChannel> commandChannel
 ) {
-    if (native) {
-        native->attachChannels(std::move(connection), std::move(eventSender), std::move(commandReceiver));
-    }
-}
-
-void NativeWebSocketConnection::attachChannels(
-    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-    std::shared_ptr<EventSender> eventSender,
-    std::shared_ptr<CommandReceiver> commandReceiver
-) {
-    std::shared_ptr<doof_event::NativeChannel> eventChannel = eventSender ? eventSender->native : nullptr;
-    std::shared_ptr<doof_event::NativeChannel> commandChannel = commandReceiver ? commandReceiver->native : nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         connection_ = connection;

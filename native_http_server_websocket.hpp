@@ -6,13 +6,6 @@
 
 #include <variant>
 
-namespace std_::event::index {
-template <typename T>
-struct ChannelReceiver;
-template <typename T>
-struct ChannelSender;
-}
-
 namespace std_::http_server::websocket {
 struct WebSocketBinary;
 struct WebSocketClose;
@@ -99,8 +92,6 @@ public:
         std::shared_ptr<std_::http_server::websocket::WebSocketPing>,
         std::shared_ptr<std_::http_server::websocket::WebSocketCloseCommand>
     >;
-    using EventSender = std_::event::index::ChannelSender<PublicEvent>;
-    using CommandReceiver = std_::event::index::ChannelReceiver<PublicCommand>;
     using ResumeInbound = std::function<void()>;
     using Sender = std::function<doof::Result<void, std::string>(
         int32_t opcode,
@@ -117,11 +108,18 @@ public:
         removeKeepAlive();
     }
 
+    template <typename EventSender, typename CommandReceiver>
     void attachChannels(
         std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
         std::shared_ptr<EventSender> eventSender,
         std::shared_ptr<CommandReceiver> commandReceiver
-    );
+    ) {
+        attachNativeChannels(
+            std::move(connection),
+            eventSender ? eventSender->native : nullptr,
+            commandReceiver ? commandReceiver->native : nullptr
+        );
+    }
 
     void attach(Sender sender) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -219,6 +217,12 @@ public:
     }
 
 private:
+    void attachNativeChannels(
+        std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
+        std::shared_ptr<doof_event::NativeChannel> eventChannel,
+        std::shared_ptr<doof_event::NativeChannel> commandChannel
+    );
+
     void addKeepAlive() {
         bool shouldAdd = false;
         {
@@ -291,11 +295,16 @@ private:
     Sender sender_;
 };
 
+template <typename EventSender, typename CommandReceiver>
 void attachWebSocketChannels(
     std::shared_ptr<NativeWebSocketConnection> native,
     std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-    std::shared_ptr<NativeWebSocketConnection::EventSender> eventSender,
-    std::shared_ptr<NativeWebSocketConnection::CommandReceiver> commandReceiver
-);
+    std::shared_ptr<EventSender> eventSender,
+    std::shared_ptr<CommandReceiver> commandReceiver
+) {
+    if (native) {
+        native->attachChannels(std::move(connection), std::move(eventSender), std::move(commandReceiver));
+    }
+}
 
 }  // namespace doof_http_server
