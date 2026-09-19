@@ -83,7 +83,7 @@ export class Response {
 
   static jsonValue(
     status: int,
-    body: JsonValue,
+    body: SerialValue,
     headers: readonly HttpHeader[] = [],
     compression: ResponseCompression = ResponseCompression.Default,
   ): Response {

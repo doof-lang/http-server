@@ -57,7 +57,7 @@ export class Request {
     return reader.readString(reader.remaining())
   }
 
-  getJsonValue(): Result<JsonValue, string> {
+  getJsonValue(): Result<SerialValue, string> {
     return parseJsonValue(this.getText())
   }
 
