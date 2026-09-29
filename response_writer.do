@@ -226,14 +226,8 @@ function respondWithBytes(
   response: Response,
   body: readonly byte[],
 ): Result<none, ServerError> {
-  let finalResponse: ByteResponse | none = none
-  case byteResponseForRequest(request, response, body) {
-    s: Success -> {
-      finalResponse = s.value
-    }
-    f: Failure -> return Failure {
-      error: f.error
-    }
+  finalResponse := byteResponseForRequest(request, response, body) else error {
+    return Failure { error }
   }
   keepAlive := responseKeepAlive(request, finalResponse.headers)
   return mapNativeVoid(nativeResponder.respond(
