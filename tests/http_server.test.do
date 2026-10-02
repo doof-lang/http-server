@@ -119,7 +119,7 @@ function handleDispatch(
   state.host = request.header("host") ?? ""
   state.body = request.getText()
 
-  try! request.respond(Response.text(201, "created\n"))
+  request.respond(Response.text(201, "created\n"))!
   requestChannel.close()
 }
 
@@ -128,7 +128,7 @@ function handleOneShot(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.empty())
+  request.respond(Response.empty())!
   second := request.respond(Response.text(200, "too late"))
   case second {
     _: Success -> Assert.fail("expected second response to fail")
@@ -147,12 +147,12 @@ function handleKeepAlive(
   state.count += 1
   if state.count == 1 {
     state.firstPath = request.path
-    try! request.respond(Response.text(200, "first\n"))
+    request.respond(Response.text(200, "first\n"))!
     return
   }
 
   state.secondPath = request.path
-  try! request.respond(Response.text(200, "second\n"))
+  request.respond(Response.text(200, "second\n"))!
   requestChannel.close()
 }
 
@@ -162,7 +162,7 @@ function handleSingleResponse(
   request: Request,
 ): none {
   state.count += 1
-  try! request.respond(Response.text(200, "ok\n"))
+  request.respond(Response.text(200, "ok\n"))!
   requestChannel.close()
 }
 
@@ -178,7 +178,7 @@ function handleGzipResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response {
+  request.respond(Response {
     status: 200,
     headers: readonly [HttpHeader {
       name: "Content-Type",
@@ -186,7 +186,7 @@ function handleGzipResponse(
     }],
     body: buildCompressionPayload(),
     compression: ResponseCompression.Compress,
-  })
+  })!
   requestChannel.close()
 }
 
@@ -194,10 +194,10 @@ function handleDefaultTextResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.text(
+  request.respond(Response.text(
     200,
     "default compression\nactual response\n",
-  ))
+  ))!
   requestChannel.close()
 }
 
@@ -205,7 +205,7 @@ function handleStreamResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.stream(
+  request.respond(Response.stream(
     200,
     TestByteStream {
       chunks: [
@@ -219,7 +219,7 @@ function handleStreamResponse(
       value: "text/plain; charset=utf-8",
     }],
     ResponseCompression.None,
-  ))
+  ))!
   requestChannel.close()
 }
 
@@ -227,7 +227,7 @@ function handleStreamCloseResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.stream(
+  request.respond(Response.stream(
     200,
     TestByteStream {
       chunks: [
@@ -239,7 +239,7 @@ function handleStreamCloseResponse(
       value: "close",
     }],
     ResponseCompression.None,
-  ))
+  ))!
   requestChannel.close()
 }
 
@@ -251,7 +251,7 @@ function handleKeepAliveStream(
   state.count += 1
   if state.count == 1 {
     state.firstPath = request.path
-    try! request.respond(Response.stream(
+    request.respond(Response.stream(
       200,
       TestByteStream {
         chunks: [
@@ -261,12 +261,12 @@ function handleKeepAliveStream(
       },
       readonly [],
       ResponseCompression.None,
-    ))
+    ))!
     return
   }
 
   state.secondPath = request.path
-  try! request.respond(Response.text(200, "second\n"))
+  request.respond(Response.text(200, "second\n"))!
   requestChannel.close()
 }
 
@@ -276,7 +276,7 @@ function handleStreamOneShot(
   request: Request,
 ): none {
   state.count += 1
-  try! request.respond(Response.stream(
+  request.respond(Response.stream(
     200,
     TestByteStream {
       chunks: [
@@ -285,7 +285,7 @@ function handleStreamOneShot(
     },
     readonly [],
     ResponseCompression.None,
-  ))
+  ))!
   second := request.respond(Response.text(200, "too late"))
   case second {
     _: Success -> Assert.fail("expected second response to fail")
@@ -300,7 +300,7 @@ function handleGzipStreamResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.stream(
+  request.respond(Response.stream(
     200,
     TestByteStream {
       chunks: [
@@ -314,7 +314,7 @@ function handleGzipStreamResponse(
       value: "text/plain; charset=utf-8",
     }],
     ResponseCompression.Compress,
-  ))
+  ))!
   requestChannel.close()
 }
 
@@ -322,7 +322,7 @@ function handleEncodedStreamResponse(
   requestChannel: ChannelSender<Request>,
   request: Request,
 ): none {
-  try! request.respond(Response.stream(
+  request.respond(Response.stream(
     200,
     TestByteStream {
       chunks: [
@@ -340,7 +340,7 @@ function handleEncodedStreamResponse(
       },
     ],
     ResponseCompression.Compress,
-  ))
+  ))!
   requestChannel.close()
 }
 
@@ -371,9 +371,9 @@ function handleWebSocketEventAny(
     textSuccess: Success -> {
       state.textCount += 1
       state.text = textSuccess.value.text
-      try! textSuccess.value.connection.commands.send(WebSocketSendText {
+      textSuccess.value.connection.commands.send(WebSocketSendText {
         text: "echo:" + textSuccess.value.text,
-      })
+      })!
       return
     }
     _: Failure -> {}
@@ -436,10 +436,10 @@ function assertRequestRejectedBeforeDispatch(requestText: string, statusLine: st
   requestReceiver.onMessage((request: Request): none => handleSingleResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -448,7 +448,7 @@ function assertRequestRejectedBeforeDispatch(requestText: string, statusLine: st
   )
 
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 0)
   Assert.isTrue(response.contains(statusLine))
@@ -487,10 +487,10 @@ export function testServerDispatchesRequestsThroughChannel(): none {
   requestReceiver.onMessage((request: Request): none => handleDispatch(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -500,7 +500,7 @@ export function testServerDispatchesRequestsThroughChannel(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   println("chunked dispatch state method=${state.method} body=${state.body} response=${response}")
   Assert.equal(state.method, "POST")
@@ -525,10 +525,10 @@ export function testRequestResponderIsOneShot(): none {
   requestReceiver.onMessage((request: Request): none => handleOneShot(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -538,7 +538,7 @@ export function testRequestResponderIsOneShot(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.secondKind, "already-responded")
   Assert.isTrue(response.contains("HTTP/1.1 204 No Content"))
@@ -568,10 +568,10 @@ export function testResponseGzipCompressionNegotiatesAcceptEncoding(): none {
   requestReceiver.onMessage((request: Request): none => handleGzipResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -582,7 +582,7 @@ export function testResponseGzipCompressionNegotiatesAcceptEncoding(): none {
   runMainEventLoop()
   response := client.wait()
   responseBytes := client.waitBytes()
-  try! server.close()
+  server.close()!
 
   bodyStart := response.indexOf("\r\n\r\n") + 4
   Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
@@ -603,10 +603,10 @@ export function testResponseZstdCompressionNegotiatesAcceptEncoding(): none {
   requestReceiver.onMessage((request: Request): none => handleGzipResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -617,7 +617,7 @@ export function testResponseZstdCompressionNegotiatesAcceptEncoding(): none {
   runMainEventLoop()
   response := client.wait()
   responseBytes := client.waitBytes()
-  try! server.close()
+  server.close()!
 
   bodyStart := response.indexOf("\r\n\r\n") + 4
   Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
@@ -639,10 +639,10 @@ export function testDefaultResponseCompressionUsesTextPolicy(): none {
   requestReceiver.onMessage((request: Request): none => handleDefaultTextResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -652,7 +652,7 @@ export function testDefaultResponseCompressionUsesTextPolicy(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isTrue(response.contains("Content-Encoding: gzip"), response)
   Assert.isTrue(response.contains("Vary: Accept-Encoding"), response)
@@ -669,10 +669,10 @@ export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): none 
   requestReceiver.onMessage((request: Request): none => handleGzipResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -682,7 +682,7 @@ export function testResponseCompressionSkipsWhenClientDoesNotAcceptGzip(): none 
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
   Assert.isTrue(response.contains("compress me\ncompress me\ncompress me\n"), response)
@@ -698,10 +698,10 @@ export function testStreamedResponseUsesChunkedTransferEncoding(): none {
   requestReceiver.onMessage((request: Request): none => handleStreamResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -711,7 +711,7 @@ export function testStreamedResponseUsesChunkedTransferEncoding(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isTrue(response.contains("HTTP/1.1 200 OK"), response)
   Assert.isTrue(response.contains("Transfer-Encoding: chunked"), response)
@@ -729,10 +729,10 @@ export function testStreamedResponseConnectionCloseClosesAfterFinalChunk(): none
   requestReceiver.onMessage((request: Request): none => handleStreamCloseResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -742,7 +742,7 @@ export function testStreamedResponseConnectionCloseClosesAfterFinalChunk(): none
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isTrue(response.contains("Connection: close"), response)
   Assert.isTrue(response.contains("\r\n3\r\nbye\r\n0\r\n\r\n"), response)
@@ -759,10 +759,10 @@ export function testStreamedKeepAliveResponseAllowsFollowingRequestAfterFinalChu
   requestReceiver.onMessage((request: Request): none => handleKeepAliveStream(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -772,7 +772,7 @@ export function testStreamedKeepAliveResponseAllowsFollowingRequestAfterFinalChu
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 2)
   Assert.equal(state.firstPath, "/first")
@@ -793,10 +793,10 @@ export function testStreamedResponseResponderIsOneShot(): none {
   requestReceiver.onMessage((request: Request): none => handleStreamOneShot(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -806,7 +806,7 @@ export function testStreamedResponseResponderIsOneShot(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.secondKind, "already-responded")
   Assert.isTrue(response.contains("\r\n4\r\ndone\r\n0\r\n\r\n"), response)
@@ -822,10 +822,10 @@ export function testStreamedGzipResponseNegotiatesAcceptEncoding(): none {
   requestReceiver.onMessage((request: Request): none => handleGzipStreamResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -836,7 +836,7 @@ export function testStreamedGzipResponseNegotiatesAcceptEncoding(): none {
   runMainEventLoop()
   response := client.wait()
   responseBytes := client.waitBytes()
-  try! server.close()
+  server.close()!
 
   bodyStart := response.indexOf("\r\n\r\n") + 4
   payloadStart := firstChunkPayloadOffset(responseBytes, bodyStart)
@@ -859,10 +859,10 @@ export function testStreamedZstdResponseNegotiatesAcceptEncoding(): none {
   requestReceiver.onMessage((request: Request): none => handleGzipStreamResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -873,7 +873,7 @@ export function testStreamedZstdResponseNegotiatesAcceptEncoding(): none {
   runMainEventLoop()
   response := client.wait()
   responseBytes := client.waitBytes()
-  try! server.close()
+  server.close()!
 
   bodyStart := response.indexOf("\r\n\r\n") + 4
   payloadStart := firstChunkPayloadOffset(responseBytes, bodyStart)
@@ -897,10 +897,10 @@ export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): none
   requestReceiver.onMessage((request: Request): none => handleGzipStreamResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -910,7 +910,7 @@ export function testStreamedGzipResponseSkipsWhenClientDoesNotAcceptGzip(): none
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
   Assert.isTrue(response.contains("compress me\n"), response)
@@ -926,10 +926,10 @@ export function testStreamedGzipResponseSkipsWhenContentEncodingIsPresent(): non
   requestReceiver.onMessage((request: Request): none => handleEncodedStreamResponse(requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -939,7 +939,7 @@ export function testStreamedGzipResponseSkipsWhenContentEncodingIsPresent(): non
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.isTrue(response.contains("Content-Encoding: identity"), response)
   Assert.isFalse(response.contains("Content-Encoding: gzip"), response)
@@ -957,10 +957,10 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): none {
   requestReceiver.onMessage((request: Request): none => handleWebSocketUpgrade(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeWebSocketTestClient.startExchangeText(
     server.host,
@@ -971,7 +971,7 @@ export function testWebSocketUpgradeDispatchesTextAndEchoesResponse(): none {
 
   runMainEventLoop()
   clientResponse := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.openCount, 1, "openCount ${state.errorKind}:${state.errorMessage} ${clientResponse}")
   Assert.isTrue(state.upgradeAttempt)
@@ -992,10 +992,10 @@ export function testWebSocketInboundBackpressurePausesAndResumesSocketReads(): n
   requestReceiver.onMessage((request: Request): none => handleBackpressuredWebSocketUpgrade(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeWebSocketTestClient.startExchangeThreeTexts(
     server.host,
@@ -1008,7 +1008,7 @@ export function testWebSocketInboundBackpressurePausesAndResumesSocketReads(): n
 
   runMainEventLoop()
   clientResponse := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.openCount, 1, clientResponse)
   Assert.equal(state.textCount, 3, clientResponse)
@@ -1029,10 +1029,10 @@ export function testInvalidWebSocketHandshakeReportsConnectionError(): none {
   requestReceiver.onMessage((request: Request): none => handleWebSocketUpgrade(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeWebSocketTestClient.startHandshakeOnly(
     server.host,
@@ -1042,7 +1042,7 @@ export function testInvalidWebSocketHandshakeReportsConnectionError(): none {
 
   runMainEventLoop()
   clientResponse := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.errorKind, "bad-websocket-handshake")
   Assert.isTrue(state.upgradeAttempt)
@@ -1060,10 +1060,10 @@ export function testHttp11ConnectionCanServeSequentialRequests(): none {
   requestReceiver.onMessage((request: Request): none => handleKeepAlive(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1073,7 +1073,7 @@ export function testHttp11ConnectionCanServeSequentialRequests(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 2)
   Assert.equal(state.firstPath, "/first")
@@ -1096,10 +1096,10 @@ export function testIdleKeepAliveConnectionExpires(): none {
   requestReceiver.onMessage((request: Request): none => handleSingleResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0, idleTimeoutMillis: 20 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1109,7 +1109,7 @@ export function testIdleKeepAliveConnectionExpires(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 1)
   Assert.isTrue(response.contains("HTTP/1.1 200 OK"))
@@ -1127,10 +1127,10 @@ export function testConnectionRequestLimitClosesAfterConfiguredCount(): none {
   requestReceiver.onMessage((request: Request): none => handleSingleResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0, maxRequestsPerConnection: 1 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1140,7 +1140,7 @@ export function testConnectionRequestLimitClosesAfterConfiguredCount(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 1)
   Assert.equal(response.split("HTTP/1.1 200 OK").length, 2)
@@ -1158,10 +1158,10 @@ export function testHandlerThatNeverRespondsTimesOutRequest(): none {
   requestReceiver.onMessage((request: Request): none => handleWithoutResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0, responseTimeoutMillis: 20 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1171,7 +1171,7 @@ export function testHandlerThatNeverRespondsTimesOutRequest(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 1)
   Assert.isTrue(response.contains("HTTP/1.1 504 Gateway Timeout"))
@@ -1189,10 +1189,10 @@ export function testSlowPartialHeadersExpireWithoutDispatch(): none {
   requestReceiver.onMessage((request: Request): none => handleSingleResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0, idleTimeoutMillis: 20 },
     requests,
-  }
+  }!
 
   client := NativeHttpSlowTestRequest.start(
     server.host,
@@ -1203,7 +1203,7 @@ export function testSlowPartialHeadersExpireWithoutDispatch(): none {
   )
 
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 0)
   Assert.equal(response, "")
@@ -1220,10 +1220,10 @@ export function testChunkedRequestBodyIsDispatched(): none {
   requestReceiver.onMessage((request: Request): none => handleDispatch(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1233,7 +1233,7 @@ export function testChunkedRequestBodyIsDispatched(): none {
 
   runMainEventLoop()
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.method, "POST")
   Assert.equal(state.body, "hello")
@@ -1423,10 +1423,10 @@ export function testRejectedRequestClosesBeforePipelinedBytesAreDispatched(): no
   requestReceiver.onMessage((request: Request): none => handleSingleResponse(state, requestChannel!, request))
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeHttpTestRequest.start(
     server.host,
@@ -1435,7 +1435,7 @@ export function testRejectedRequestClosesBeforePipelinedBytesAreDispatched(): no
   )
 
   response := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.count, 0)
   Assert.isTrue(response.contains("HTTP/1.1 400 Bad Request"))

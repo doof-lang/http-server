@@ -21,7 +21,7 @@ function main(args: string[]): int {
 
   requestReceiver.onMessage((request: Request): none => {
     response := router.handle(request) ?? Response.text(404, "not found\n")
-    try! request.respond(response)
+    request.respond(response)!
   })
 
   server := Server.listen{
@@ -34,6 +34,6 @@ function main(args: string[]): int {
 
   println("Serving ${documentRoot} at http://${server.host}:${server.port}/")
   runMainEventLoop()
-  try! server.close()
+  server.close()!
   return 0
 }
