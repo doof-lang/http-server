@@ -53,6 +53,8 @@ event loop; pass it callbacks of your own to report results back.
 - `samples/simple` serves files from a local `public` directory and shows
   basic URL path decoding, traversal rejection, content type headers, and
   directory `index.html` handling.
+- `samples/multithreaded` spreads requests across a pool of worker actors and
+  includes a load generator that sweeps worker and connection counts.
 
 ## Request Flow
 
