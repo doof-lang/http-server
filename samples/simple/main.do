@@ -1,11 +1,11 @@
-import { createChannel, runMainEventLoop } from "std/event"
+import { runMainEventLoop } from "std/event"
 import { Request, Response, Server, ServerOptions } from "std/http-server"
 import { Router, StaticFileOptions } from "std/http-router"
 import { currentWorkingDirectory, join } from "std/path"
 
 function main(args: string[]): int {
-  cwd := currentWorkingDirectory() else {
-    println("Could not read current working directory: ${cwd.error}")
+  cwd := currentWorkingDirectory() else error {
+    println("Could not read current working directory: ${error}")
     return 1
   }
 
@@ -14,21 +14,14 @@ function main(args: string[]): int {
   router := Router()
     .staticFiles("/", { root: documentRoot })
 
-  (requestSender, requestReceiver) := createChannel<Request>{
-    capacity: 256,
-    keepsAlive: true,
-  }
-
-  requestReceiver.onMessage((request: Request): none => {
-    response := router.handle(request) ?? Response.text(404, "not found\n")
-    request.respond(response)!
-  })
-
   server := Server.listen{
     options: { port: 8080 },
-    requests: requestSender,
-  } else {
-    println("Could not start server: ${server.error.message}")
+    onRequest: (request: Request): none => {
+      response := router.handle(request) ?? Response.text(404, "not found\n")
+      request.respond(response)!
+    },
+  } else error {
+    println("Could not start server: ${error.message}")
     return 1
   }
 

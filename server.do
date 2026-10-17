@@ -1,5 +1,3 @@
-import { ChannelSender, SendError } from "std/event"
-
 import { ServerError, mapNativeVoid, parseServerError } from "./errors"
 import { NativeExchange, NativeHttpServer } from "./native"
 import { Request, requestFromExchange } from "./request"
@@ -11,6 +9,8 @@ export class ServerOptions {
   readonly idleTimeoutMillis: int = 30_000
   readonly responseTimeoutMillis: int = 30_000
   readonly maxRequestsPerConnection: int = 0
+  // While open, the server keeps `runMainEventLoop()` from returning.
+  readonly keepsAlive: bool = true
 }
 
 export class Server {
@@ -20,7 +20,7 @@ export class Server {
 
   static listen(
     options: ServerOptions,
-    requests: ChannelSender<Request>,
+    onRequest: (request: Request): none,
   ): Result<Server, ServerError> {
     started := NativeHttpServer.listen(
       options.host,
@@ -29,7 +29,8 @@ export class Server {
       options.idleTimeoutMillis,
       options.responseTimeoutMillis,
       options.maxRequestsPerConnection,
-      (exchange: NativeExchange): int => requestDisposition(requests, exchange),
+      options.keepsAlive,
+      (exchange: NativeExchange): none => onRequest(requestFromExchange(exchange)),
     )
 
     return case started {
@@ -48,19 +49,5 @@ export class Server {
 
   close(): Result<none, ServerError> {
     return mapNativeVoid(this.native.close())
-  }
-}
-
-function requestDisposition(
-  requests: ChannelSender<Request>,
-  exchange: NativeExchange,
-): int {
-  delivered := requests.send(requestFromExchange(exchange))
-  return case delivered {
-    _: Success -> 0,
-    f: Failure -> case f.error {
-      SendError.Full -> 1,
-      _ -> 2,
-    }
   }
 }

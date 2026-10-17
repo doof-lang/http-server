@@ -1,21 +1,22 @@
 # std/http-server Guide
 
 `std/http-server` is an inbound HTTP primitive. Native socket I/O accepts and
-parses requests, then sends immutable `Request` snapshots through a
-`std/event.ChannelSender<Request>`. Application code owns the receiver endpoint
-and completes each exchange through the responder embedded in the request.
+parses requests, then posts immutable `Request` snapshots to the handler passed
+to `Server.listen`. The handler runs on the actor that created it and completes
+each exchange through the responder embedded in the request.
 
 ## Request Flow
 
 1. The native reactor accepts and parses a complete request.
-2. The server enqueues a `Request` on the configured sender.
-3. Application handlers receive the request on the event loop.
+2. The server posts the `Request` to the handler with `tryPost`.
+3. The handler runs on its owning actor, in arrival order.
 4. The handler calls `request.respond(response)` or
    `request.upgradeToWebSocket(connection)`.
 
-The channel is not bidirectional. Responses do not go back through the channel.
-If the request channel is full or closed, the server rejects the request with
-`503 Service Unavailable`.
+Responses do not go back through the handler. If the handler's actor mailbox is
+full, or the actor has retired, the server rejects the request with
+`503 Service Unavailable`. An open server keeps `runMainEventLoop()` running
+unless `ServerOptions.keepsAlive` is `false`.
 
 ## Requests And Responses
 
@@ -34,12 +35,14 @@ headers are respected.
 ## WebSockets
 
 WebSocket upgrades are explicit. Check `Request.isWebSocketUpgrade()`, create a
-connection with `createWebSocketConnection`, subscribe to its event channel, then
-call `request.upgradeToWebSocket(connection)`.
+connection with `createWebSocketConnection(onEvent, options)`, then call
+`request.upgradeToWebSocket(connection)`. Events are posted to `onEvent` in
+order; writes are `sendText`, `sendBinary`, `ping`, and `close` on the
+connection.
 
-Inbound WebSocket events and outbound commands use bounded channels. Backpressure
-pauses native reads when the event channel is full. WebSocket message size is
-bounded by `ServerOptions.maxBodyBytes`.
+Native reads pause once `WebSocketOptions.eventCapacity` events are posted but
+not yet handled, and resume when half have been handled. WebSocket message size
+is bounded by `ServerOptions.maxBodyBytes`.
 
 ## Timeouts And Limits
 
@@ -70,10 +73,8 @@ WebSockets:
 
 - `WebSocketOptions`
 - `WebSocketConnection`
-- `WebSocketEvent`
-- `WebSocketCommand`
+- `WebSocketEvent` and its event classes
 - `createWebSocketConnection`
-- send/close/ping command types
 
 Declarations are defined across [index.do](../index.do), [server.do](../server.do),
 [request.do](../request.do), [response.do](../response.do), and [websocket.do](../websocket.do).

@@ -1,18 +1,17 @@
 import { BlobBuilder } from "std/blob"
-import { ChannelReceiver, ChannelSender, createChannel } from "std/event"
 import { HttpHeader } from "std/http"
 
-import { ServerError, parseServerError } from "./errors"
+import { ServerError, mapNativeVoid, parseServerError } from "./errors"
 import { headersAreSafe, renderHeaders } from "./headers"
 import { NativeResponder, NativeWebSocketConnection } from "./native"
 import { validateWebSocketHandshake } from "./websocket_internal"
 
-import isolated function _attachNativeWebSocketChannels(
+import isolated function _attachNativeWebSocketHandler(
   native: NativeWebSocketConnection,
   connection: WebSocketConnection,
-  eventSender: ChannelSender<WebSocketEvent>,
-  commandReceiver: ChannelReceiver<WebSocketCommand>,
-): none from "./native_http_server.hpp" as doof_http_server::attachWebSocketChannels
+  onEvent: (event: WebSocketEvent): none,
+  eventCapacity: int,
+): none from "./native_http_server.hpp" as doof_http_server::attachWebSocketHandler
 
 export enum WebSocketState {
   Connecting,
@@ -32,8 +31,9 @@ export readonly WEBSOCKET_CLOSE_MESSAGE_TOO_BIG = 1009
 export readonly WEBSOCKET_CLOSE_INTERNAL_ERROR = 1011
 
 export class WebSocketOptions {
+  // Inbound events posted to the handler but not yet handled before the
+  // connection stops reading from the socket.
   readonly eventCapacity: int = 1024
-  readonly commandCapacity: int = 1024
   readonly headers: readonly HttpHeader[] = []
   readonly subprotocol: string | none = none
 }
@@ -45,12 +45,6 @@ export type WebSocketEvent =
   WebSocketWritable |
   WebSocketClose |
   WebSocketError
-
-export type WebSocketCommand =
-  WebSocketSendText |
-  WebSocketSendBinary |
-  WebSocketPing |
-  WebSocketCloseCommand
 
 export class WebSocketOpen {
   readonly connection: WebSocketConnection
@@ -82,65 +76,48 @@ export class WebSocketError {
   readonly error: ServerError
 }
 
-export class WebSocketSendText {
-  readonly text: string
-  readonly coalesceKey: string | none = none
-}
-
-export class WebSocketSendBinary {
-  readonly bytes: readonly byte[]
-  readonly coalesceKey: string | none = none
-}
-
-export class WebSocketPing {
-}
-
-export class WebSocketCloseCommand {
-  readonly code: int = 1000
-  readonly reason: string = ""
-}
-
 export class WebSocketConnection {
-  readonly events: ChannelReceiver<WebSocketEvent>
-  readonly commands: ChannelSender<WebSocketCommand>
   readonly options: WebSocketOptions = WebSocketOptions {}
-  private readonly eventSender: ChannelSender<WebSocketEvent>
-  private readonly commandReceiver: ChannelReceiver<WebSocketCommand>
   private readonly native: NativeWebSocketConnection
 
   state(): WebSocketState {
     return nativeStateToPublic(this.native.state())
   }
 
-  close(): none {
-    this.commands.close()
-    this.events.close()
+  sendText(text: string): Result<none, ServerError> {
+    return mapNativeVoid(this.native.sendText(text))
+  }
+
+  sendBinary(bytes: readonly byte[]): Result<none, ServerError> {
+    return mapNativeVoid(this.native.sendBinary(bytes))
+  }
+
+  ping(): Result<none, ServerError> {
+    return mapNativeVoid(this.native.ping())
+  }
+
+  close(code: int = WEBSOCKET_CLOSE_NORMAL, reason: string = ""): Result<none, ServerError> {
+    return mapNativeVoid(this.native.close(code, reason))
   }
 }
 
+// Events are delivered to `onEvent` on the actor that created it, in order.
 export function createWebSocketConnection(
+  onEvent: (event: WebSocketEvent): none,
   options: WebSocketOptions = WebSocketOptions {},
 ): WebSocketConnection {
-  (eventSender, events) := createChannel<WebSocketEvent>{
-    capacity: options.eventCapacity,
-    keepsAlive: true,
-  }
-  (commands, commandReceiver) := createChannel<WebSocketCommand>{
-    capacity: options.commandCapacity,
-    keepsAlive: true,
-  }
   native := NativeWebSocketConnection()
+  connection := WebSocketConnection { options, native }
 
-  connection := WebSocketConnection {
-    events,
-    commands,
-    options,
-    eventSender,
-    commandReceiver,
+  _attachNativeWebSocketHandler(
     native,
-  }
-
-  _attachNativeWebSocketChannels(native, connection, eventSender, commandReceiver)
+    connection,
+    (event: WebSocketEvent): none => {
+      onEvent(event)
+      native.eventHandled()
+    },
+    options.eventCapacity,
+  )
 
   return connection
 }
@@ -191,19 +168,7 @@ export function failWebSocketConnection(
   connection: WebSocketConnection,
   error: ServerError,
 ): none {
-  emitLocalWebSocketEvent(connection, WebSocketError {
-    connection,
-    error,
-  })
-  connection.commands.close()
-  connection.events.close()
-}
-
-function emitLocalWebSocketEvent(
-  connection: WebSocketConnection,
-  event: WebSocketEvent,
-): none {
-  ignored := connection.eventSender.send(event)
+  connection.native.fail("${error.kind}|${error.message}")
 }
 
 function websocketHandshakeResponseText(

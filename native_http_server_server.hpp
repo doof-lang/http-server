@@ -13,7 +13,8 @@ public:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest
+        bool keepsAlive,
+        doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest
     ) {
         detail::ignoreSigpipe();
         if (host.empty()) {
@@ -105,6 +106,7 @@ public:
             detail::closeSocket(listenFd);
             return doof::Failure<std::string>{doof::failure_error(started)};
         }
+        server->retainMainEventLoop(keepsAlive);
         retain(server);
         return doof::Success<std::shared_ptr<NativeHttpServer>>{std::move(server)};
     }
@@ -156,6 +158,7 @@ public:
             connection->closeFromServer();
         }
 
+        releaseMainEventLoop();
         release(this);
         return doof::Success<void>{};
     }
@@ -168,7 +171,7 @@ private:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
+        doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest,
         int listenFd,
         std::shared_ptr<detail::Reactor> reactor
     )
@@ -240,6 +243,29 @@ private:
         }
     }
 
+    // An open server keeps the root event loop running, as a long-lived
+    // event source, until it is closed.
+    void retainMainEventLoop(bool keepsAlive) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!keepsAlive || closed_) {
+            return;
+        }
+        doof::detail::ApplicationDomain::shared().add_keep_alive_source(true);
+        keepingAlive_ = true;
+    }
+
+    void releaseMainEventLoop() {
+        bool keptAlive = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            keptAlive = keepingAlive_;
+            keepingAlive_ = false;
+        }
+        if (keptAlive) {
+            doof::detail::ApplicationDomain::shared().remove_keep_alive_source(true);
+        }
+    }
+
     static void retain(const std::shared_ptr<NativeHttpServer>& server) {
         std::lock_guard<std::mutex> lock(registryMutex());
         registry().push_back(server);
@@ -281,10 +307,11 @@ private:
     int32_t idleTimeoutMillis_;
     int32_t responseTimeoutMillis_;
     int32_t maxRequestsPerConnection_;
-    doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
+    doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest_;
 
     mutable std::mutex mutex_;
     bool closed_ = false;
+    bool keepingAlive_ = false;
     int listenFd_;
     std::shared_ptr<detail::Reactor> reactor_;
     std::vector<std::weak_ptr<NativeConnection>> activeConnections_;

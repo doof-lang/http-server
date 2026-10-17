@@ -15,7 +15,7 @@ public:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest,
+        doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest,
         std::shared_ptr<detail::Reactor> reactor
     )
         : transport_(std::move(transport)),
@@ -561,8 +561,9 @@ private:
 
         auto responder = std::make_shared<NativeResponder>(shared_from_this(), attempt.request);
         auto exchange = std::make_shared<NativeExchange>(std::move(attempt.request), responder);
-        const int32_t disposition = doof::detail::call_callback_unchecked(onRequest_, std::move(exchange));
-        if (disposition != 0) {
+        // Requests run on the handler's owning actor; a full or retired
+        // owner sheds the request instead of blocking the reactor thread.
+        if (doof::is_failure(onRequest_.tryPost(std::move(exchange)))) {
             enqueueImmediateClose(detail::simpleResponseBytes(503, "Service Unavailable\n"));
         }
     }
@@ -631,7 +632,7 @@ private:
     std::string readBuffer_;
     std::vector<uint8_t> writeBuffer_;
     size_t writeOffset_ = 0;
-    doof::callback<int32_t(std::shared_ptr<NativeExchange>)> onRequest_;
+    doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest_;
     std::shared_ptr<detail::Reactor> reactor_;
     std::shared_ptr<detail::WebSocketSession> websocketSession_;
     std::chrono::steady_clock::time_point lastActivityAt_;

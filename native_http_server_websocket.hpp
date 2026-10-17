@@ -1,6 +1,6 @@
 #pragma once
 
-#include "native_event.hpp"
+#include "doof_runtime.hpp"
 #include "native_http_server_protocol.hpp"
 #include "native_http_server_websocket_frames.hpp"
 
@@ -9,13 +9,9 @@
 namespace std_::http_server::websocket {
 struct WebSocketBinary;
 struct WebSocketClose;
-struct WebSocketCloseCommand;
 struct WebSocketConnection;
 struct WebSocketError;
 struct WebSocketOpen;
-struct WebSocketPing;
-struct WebSocketSendBinary;
-struct WebSocketSendText;
 struct WebSocketText;
 struct WebSocketWritable;
 }
@@ -86,12 +82,8 @@ public:
         std::shared_ptr<std_::http_server::websocket::WebSocketClose>,
         std::shared_ptr<std_::http_server::websocket::WebSocketError>
     >;
-    using PublicCommand = std::variant<
-        std::shared_ptr<std_::http_server::websocket::WebSocketSendText>,
-        std::shared_ptr<std_::http_server::websocket::WebSocketSendBinary>,
-        std::shared_ptr<std_::http_server::websocket::WebSocketPing>,
-        std::shared_ptr<std_::http_server::websocket::WebSocketCloseCommand>
-    >;
+    using EventHandler = doof::callback<void(PublicEvent)>;
+
     using ResumeInbound = std::function<void()>;
     using Sender = std::function<doof::Result<void, std::string>(
         int32_t opcode,
@@ -108,17 +100,20 @@ public:
         removeKeepAlive();
     }
 
-    template <typename EventSender, typename CommandReceiver>
-    void attachChannels(
+    // Events are posted to the handler's owning actor. The connection keeps
+    // the root event loop alive from attachment until it closes or fails.
+    void attachHandler(
         std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-        std::shared_ptr<EventSender> eventSender,
-        std::shared_ptr<CommandReceiver> commandReceiver
+        EventHandler onEvent,
+        int32_t eventCapacity
     ) {
-        attachNativeChannels(
-            std::move(connection),
-            eventSender ? eventSender->native : nullptr,
-            commandReceiver ? commandReceiver->native : nullptr
-        );
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            connection_ = std::move(connection);
+            onEvent_ = std::move(onEvent);
+            eventCapacity_ = eventCapacity > 0 ? eventCapacity : 1;
+        }
+        addKeepAlive();
     }
 
     void attach(Sender sender) {
@@ -142,11 +137,31 @@ public:
         }
     }
 
+    // Called on the handler's actor after each event has been handled.
+    // Paused inbound reads resume once half the event window has drained.
+    void eventHandled() {
+        bool resume = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (pendingEvents_ > 0) {
+                --pendingEvents_;
+            }
+            if (inboundPaused_ && pendingEvents_ <= eventCapacity_ / 2) {
+                inboundPaused_ = false;
+                resume = true;
+            }
+        }
+        if (resume) {
+            resumeInboundReads();
+        }
+    }
+
     int32_t state() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return static_cast<int32_t>(state_);
     }
 
+    // Defined by the Doof bodies in native.do.
     doof::Result<void, std::string> sendText(const std::string& text);
     doof::Result<void, std::string> sendBinary(const std::shared_ptr<std::vector<uint8_t>>& bytes);
     doof::Result<void, std::string> ping();
@@ -182,8 +197,12 @@ public:
         return sender(opcode, payload ? payload : std::make_shared<std::vector<uint8_t>>(), closeCode, closeReason);
     }
 
+    // Fails a connection that never opened, such as a rejected handshake.
+    void fail(const std::string& error) {
+        (void)markError(error);
+    }
+
     int32_t markOpen() {
-        addKeepAlive();
         setState(NativeWebSocketState::Open);
         return emit(NativeWebSocketEventKind::Open, "", {}, 0, "", true, "");
     }
@@ -191,7 +210,6 @@ public:
     int32_t markError(const std::string& error) {
         setState(NativeWebSocketState::Error);
         const auto code = emit(NativeWebSocketEventKind::Error, "", {}, 0, "", false, error);
-        closeEventChannel();
         removeKeepAlive();
         return code;
     }
@@ -199,7 +217,6 @@ public:
     int32_t markClosed(int32_t code, const std::string& reason, bool wasClean) {
         setState(NativeWebSocketState::Closed);
         const auto pressure = emit(NativeWebSocketEventKind::Close, "", {}, code, reason, wasClean, "");
-        closeEventChannel();
         removeKeepAlive();
         return pressure;
     }
@@ -217,12 +234,6 @@ public:
     }
 
 private:
-    void attachNativeChannels(
-        std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-        std::shared_ptr<doof_event::NativeChannel> eventChannel,
-        std::shared_ptr<doof_event::NativeChannel> commandChannel
-    );
-
     void addKeepAlive() {
         bool shouldAdd = false;
         {
@@ -256,24 +267,7 @@ private:
         state_ = state;
     }
 
-    void closeEventChannel() {
-        std::shared_ptr<doof_event::NativeChannel> eventChannel;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            eventChannel = eventChannel_;
-        }
-        if (eventChannel) {
-            eventChannel->tryClose();
-        }
-    }
-
-    void handleCommand(PublicCommand command);
-    void pauseCommandChannel();
-    void resumeCommandChannel();
-    void emitErrorToPublicChannel(const std::string& raw);
-    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> publicConnection() const;
-    int32_t emitPublicEvent(PublicEvent event, bool keyed);
-    void closePublicChannels();
+    int32_t deliver(PublicEvent event, bool terminal);
 
     int32_t emit(
         NativeWebSocketEventKind kind,
@@ -288,22 +282,24 @@ private:
     mutable std::mutex mutex_;
     NativeWebSocketState state_ = NativeWebSocketState::Connecting;
     bool countedKeepAlive_ = false;
-    std::shared_ptr<doof_event::NativeChannel> eventChannel_;
-    std::shared_ptr<doof_event::NativeChannel> commandChannel_;
+    bool inboundPaused_ = false;
+    int32_t pendingEvents_ = 0;
+    int32_t eventCapacity_ = 1;
+    EventHandler onEvent_;
     std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection_;
     ResumeInbound resumeInbound_;
     Sender sender_;
 };
 
-template <typename EventSender, typename CommandReceiver>
-void attachWebSocketChannels(
+template <typename Connection>
+void attachWebSocketHandler(
     std::shared_ptr<NativeWebSocketConnection> native,
-    std::shared_ptr<std_::http_server::websocket::WebSocketConnection> connection,
-    std::shared_ptr<EventSender> eventSender,
-    std::shared_ptr<CommandReceiver> commandReceiver
+    std::shared_ptr<Connection> connection,
+    NativeWebSocketConnection::EventHandler onEvent,
+    int32_t eventCapacity
 ) {
     if (native) {
-        native->attachChannels(std::move(connection), std::move(eventSender), std::move(commandReceiver));
+        native->attachHandler(std::move(connection), std::move(onEvent), eventCapacity);
     }
 }
 

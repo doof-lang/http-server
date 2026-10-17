@@ -10,7 +10,7 @@ export import class NativeExchange from "./native_http_server.hpp" as doof_http_
   isolated responder(): NativeResponder
 }
 
-export import class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
+export import isolated class NativeResponder from "./native_http_server.hpp" as doof_http_server::NativeResponder {
   isolated respond(responseText: string, body: readonly byte[], keepAlive: bool): Result<none, string>
   isolated beginStreamResponse(responseText: string, keepAlive: bool): Result<none, string>
   isolated writeStreamBytes(bytes: readonly byte[]): Result<none, string>
@@ -31,7 +31,7 @@ export import class NativeWebSocketEvent from "./native_http_server.hpp" as doof
   isolated error(): string
 }
 
-export import class NativeWebSocketConnection from "./native_http_server.hpp" as doof_http_server::NativeWebSocketConnection {
+export import isolated class NativeWebSocketConnection from "./native_http_server.hpp" as doof_http_server::NativeWebSocketConnection {
   isolated static constructor(): NativeWebSocketConnection
 
   isolated sendRaw(
@@ -54,11 +54,13 @@ export import class NativeWebSocketConnection from "./native_http_server.hpp" as
   }
 
   isolated close(code: int, reason: string): Result<none, string>
+  isolated fail(error: string): none
+  isolated eventHandled(): none
   isolated resumeInboundReads(): none
   isolated state(): int
 }
 
-export import class NativeHttpServer from "./native_http_server.hpp" as doof_http_server::NativeHttpServer {
+export import isolated class NativeHttpServer from "./native_http_server.hpp" as doof_http_server::NativeHttpServer {
   isolated static listen(
     host: string,
     port: int,
@@ -66,7 +68,8 @@ export import class NativeHttpServer from "./native_http_server.hpp" as doof_htt
     idleTimeoutMillis: int,
     responseTimeoutMillis: int,
     maxRequestsPerConnection: int,
-    onRequest: (exchange: NativeExchange): int,
+    keepsAlive: bool,
+    onRequest: (exchange: NativeExchange): none,
   ): Result<NativeHttpServer, string>
 
   isolated host(): string

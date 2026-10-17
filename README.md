@@ -2,15 +2,13 @@
 
 `std/http-server` is a small inbound HTTP primitive for Doof programs. A native
 readiness reactor owns socket I/O, turns each accepted request into an immutable
-`Request` snapshot, and sends that snapshot through a `std/event` channel. The
-application owns the receiving endpoint, handles each request on the event loop,
-and completes the exchange with `request.respond(...)` or
+`Request` snapshot, and posts it to the request handler passed to
+`Server.listen`. The handler runs on the actor that created it, in arrival
+order, and completes the exchange with `request.respond(...)` or
 `request.upgradeToWebSocket(...)`.
 
-The request channel is one-way. The server is a producer of `Request` values; it
-does not receive responses through the channel. Responses are sent through the
-per-request responder stored inside `Request`, which lets the channel remain a
-bounded delivery queue rather than a bidirectional protocol.
+Responses are sent through the per-request responder stored inside `Request`,
+so the handler never needs a reply path back to the server.
 
 ## Documentation
 
@@ -22,7 +20,7 @@ bounded delivery queue rather than a bidirectional protocol.
 
 ```doof
 import { Request, Response, Server, ServerOptions } from "std/http-server"
-import { createChannel, runMainEventLoop } from "std/event"
+import { runMainEventLoop } from "std/event"
 
 function handleRequest(request: Request): void {
   response := case request.path {
@@ -35,16 +33,9 @@ function handleRequest(request: Request): void {
 }
 
 function main(): int {
-  (requestSender, requestReceiver) := createChannel<Request>{
-    capacity: 256,
-    keepsAlive: true,
-  }
-
-  requestReceiver.onMessage(handleRequest)
-
   server := try! Server.listen{
     options: ServerOptions { port: 8080 },
-    requests: requestSender,
+    onRequest: handleRequest,
   }
 
   runMainEventLoop()
@@ -53,10 +44,9 @@ function main(): int {
 }
 ```
 
-Pass the sender endpoint to `Server.listen`, and attach application handlers to
-the receiver endpoint. If the handler needs to coordinate with another actor or
-native component, pass that component its own endpoint or create a second
-channel for replies.
+An open server keeps `runMainEventLoop()` running until `close()`. Create the
+handler inside an actor to handle requests on that actor instead of the root
+event loop; pass it callbacks of your own to report results back.
 
 ## Samples
 
@@ -67,14 +57,15 @@ channel for replies.
 ## Request Flow
 
 1. The native reactor reads and parses a complete HTTP request.
-2. The server attempts to enqueue a `Request` on the supplied channel sender.
-3. The receiver endpoint delivers the `Request` to the application handler.
+2. The server posts the `Request` to the handler with `tryPost`.
+3. The handler runs on its owning actor.
 4. The handler sends the HTTP response by calling `request.respond(response)`.
 5. For WebSocket upgrades, the handler calls
    `request.upgradeToWebSocket(connection)` instead of `respond(...)`.
 
-If the request channel is full or closed, the listener rejects the request with
-`503 Service Unavailable` instead of growing an unbounded queue.
+If the handler's actor mailbox is full, or the actor has retired, the listener
+rejects the request with `503 Service Unavailable` instead of growing an
+unbounded queue.
 
 ## Request And Response
 
@@ -110,16 +101,15 @@ token.
 
 `Request.upgradeToWebSocket(connection)` claims an HTTP request for WebSocket
 upgrade using a caller-created `WebSocketConnection`. Create connections with
-`createWebSocketConnection(...)`; inbound websocket events are delivered through
-`connection.events`, and application writes are sent through
-`connection.commands`.
+`createWebSocketConnection(onEvent, options)`. Inbound websocket events are
+posted to `onEvent` in order on the actor that created it, and application
+writes call `sendText`, `sendBinary`, `ping`, and `close` on the connection.
 
 ```doof
 import {
   Request,
   WebSocketEvent,
   WebSocketOptions,
-  WebSocketSendText,
   WebSocketText,
   createWebSocketConnection,
 } from "std/http-server"
@@ -128,9 +118,7 @@ function handleSocketEvent(event: WebSocketEvent): void {
   text := event as WebSocketText
   case text {
     s: Success -> {
-      try! s.value.connection.commands.send(WebSocketSendText {
-        text: "echo:" + s.value.text,
-      })
+      try! s.value.connection.sendText("echo:" + s.value.text)
     }
     _: Failure -> {}
   }
@@ -141,23 +129,22 @@ function handleRequest(request: Request): void {
     return
   }
 
-  connection := createWebSocketConnection(WebSocketOptions {
-    eventCapacity: 1024,
-    commandCapacity: 1024,
-  })
-  connection.events.onMessage(handleSocketEvent)
+  connection := createWebSocketConnection(
+    handleSocketEvent,
+    WebSocketOptions { eventCapacity: 1024 },
+  )
   request.upgradeToWebSocket(connection)
 }
 ```
 
-Handshake and runtime failures are reported as `WebSocketError` values through
-the event receiver. Outbound commands are `WebSocketSendText`,
-`WebSocketSendBinary`, `WebSocketPing`, and `WebSocketCloseCommand`.
+Handshake and runtime failures are reported as `WebSocketError` events.
+`WebSocketWritable` reports that queued outbound frames have been written.
 
-The inbound event channel applies backpressure to the native socket reader.
-When the channel reaches high-water, the server pauses read interest for that
-websocket connection and leaves already-buffered bytes in place. Reads resume
-after the channel drains to low-water and the sender receives `onReady`.
+Inbound events apply backpressure to the native socket reader. Once
+`eventCapacity` events have been posted but not yet handled, the server pauses
+read interest for that websocket connection and leaves already-buffered bytes
+in place. Reads resume when the handler has worked through half of them. A
+connection keeps `runMainEventLoop()` running until it closes or fails.
 
 WebSocket v1 supports HTTP/1.1 RFC 6455 handshakes, text and binary messages,
 ping/pong, close frames, and fragmented text/binary messages. WebSocket message
@@ -173,6 +160,7 @@ class ServerOptions {
   readonly idleTimeoutMillis: int = 30_000
   readonly responseTimeoutMillis: int = 30_000
   readonly maxRequestsPerConnection: int = 0
+  readonly keepsAlive: bool = true
 }
 ```
 
@@ -190,6 +178,10 @@ disable this timeout.
 
 `maxRequestsPerConnection` defaults to `0` (unbounded). Set a positive value to
 close a connection after that many completed requests.
+
+`keepsAlive` defaults to `true`, so an open server keeps `runMainEventLoop()`
+running. Pass `false` for a passive server that only serves while something
+else keeps the loop alive.
 
 ## Platform Notes
 
