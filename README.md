@@ -29,17 +29,17 @@ function handleRequest(request: Request): void {
     _ -> Response.text(404, "not found\n"),
   }
 
-  try! request.respond(response)
+  request.respond(response)!
 }
 
 function main(): int {
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 8080 },
     onRequest: handleRequest,
-  }
+  }!
 
   runMainEventLoop()
-  try! server.close()
+  server.close()!
   return 0
 }
 ```
@@ -118,7 +118,7 @@ function handleSocketEvent(event: WebSocketEvent): void {
   text := event as WebSocketText
   case text {
     s: Success -> {
-      try! s.value.connection.sendText("echo:" + s.value.text)
+      s.value.connection.sendText("echo:" + s.value.text)!
     }
     _: Failure -> {}
   }
