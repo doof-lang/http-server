@@ -82,10 +82,16 @@ public:
             return doof::Failure<std::string>{"listen|" + error};
         }
 
-        auto reactorResult = detail::createPlatformReactor();
-        if (doof::is_failure(reactorResult)) {
-            detail::closeSocket(listenFd);
-            return doof::Failure<std::string>{doof::failure_error(reactorResult)};
+        // The first reactor also accepts. Accepted connections are spread
+        // across all of them so socket I/O is not limited to one thread.
+        std::vector<std::shared_ptr<detail::Reactor>> reactors;
+        for (size_t index = 0; index < ioThreadCount(); ++index) {
+            auto reactorResult = detail::createPlatformReactor();
+            if (doof::is_failure(reactorResult)) {
+                detail::closeSocket(listenFd);
+                return doof::Failure<std::string>{doof::failure_error(reactorResult)};
+            }
+            reactors.push_back(doof::success_value(reactorResult));
         }
 
         auto server = std::shared_ptr<NativeHttpServer>(
@@ -96,9 +102,9 @@ public:
                 idleTimeoutMillis,
                 responseTimeoutMillis,
                 maxRequestsPerConnection,
-                std::move(onRequest),
+                std::make_shared<detail::RequestDispatcher>(std::move(onRequest)),
                 listenFd,
-                doof::success_value(reactorResult)
+                std::move(reactors)
             )
         );
         auto started = server->start();
@@ -128,6 +134,23 @@ public:
         return listenFd_;
     }
 
+    // Replaces the callbacks that receive new requests. Requests already
+    // posted to a handler stay with it.
+    doof::Result<void, std::string> setHandlers(
+        const std::shared_ptr<std::vector<detail::ExchangeHandler>>& handlers
+    ) {
+        if (!handlers || handlers->empty()) {
+            return doof::Failure<std::string>{"config|handlers must not be empty"};
+        }
+        dispatcher_->setHandlers(*handlers);
+        return doof::Success<void>{};
+    }
+
+    // Requests answered with 503 because every handler's mailbox was full.
+    int64_t shedCount() const {
+        return dispatcher_->shedCount();
+    }
+
     void onReadable() override {
         acceptReadyConnections();
     }
@@ -152,7 +175,9 @@ public:
             }
         }
 
-        reactor_->stop();
+        for (const auto& reactor : reactors_) {
+            reactor->stop();
+        }
         detail::closeSocket(listenFd);
         for (const auto& connection : connections) {
             connection->closeFromServer();
@@ -171,9 +196,9 @@ private:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest,
+        std::shared_ptr<detail::RequestDispatcher> dispatcher,
         int listenFd,
-        std::shared_ptr<detail::Reactor> reactor
+        std::vector<std::shared_ptr<detail::Reactor>> reactors
     )
         : host_(std::move(host)),
           port_(port),
@@ -181,19 +206,36 @@ private:
           idleTimeoutMillis_(idleTimeoutMillis),
           responseTimeoutMillis_(responseTimeoutMillis),
           maxRequestsPerConnection_(maxRequestsPerConnection),
-          onRequest_(std::move(onRequest)),
+          dispatcher_(std::move(dispatcher)),
           listenFd_(listenFd),
-          reactor_(std::move(reactor)) {}
+          reactors_(std::move(reactors)) {}
+
+    // One I/O thread per four cores, capped at four. Each request already
+    // crosses to the handler's actor, so I/O threads only read, parse and
+    // dispatch; a few are enough to keep many workers busy.
+    static size_t ioThreadCount() {
+        const unsigned cores = std::thread::hardware_concurrency();
+        return std::max<size_t>(1, std::min<size_t>(4, cores / 4));
+    }
 
     doof::Result<void, std::string> start() {
         auto nonBlocking = detail::setNonBlocking(listenFd_);
         if (doof::is_failure(nonBlocking)) {
             return nonBlocking;
         }
-        if (!reactor_->addHandler(shared_from_this(), true, false)) {
+        if (!reactors_.front()->addHandler(shared_from_this(), true, false)) {
             return doof::Failure<std::string>{"reactor|failed to register listener"};
         }
-        return reactor_->start();
+        for (const auto& reactor : reactors_) {
+            auto started = reactor->start();
+            if (doof::is_failure(started)) {
+                for (const auto& running : reactors_) {
+                    running->stop();
+                }
+                return started;
+            }
+        }
+        return doof::Success<void>{};
     }
 
     void acceptReadyConnections() {
@@ -209,6 +251,8 @@ private:
                 }
 
                 std::shared_ptr<NativeConnection> connection;
+                const auto& reactor = reactors_[nextReactor_];
+                nextReactor_ = (nextReactor_ + 1) % reactors_.size();
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     if (closed_) {
@@ -222,12 +266,12 @@ private:
                         idleTimeoutMillis_,
                         responseTimeoutMillis_,
                         maxRequestsPerConnection_,
-                        onRequest_,
-                        reactor_
+                        dispatcher_,
+                        reactor
                     );
                     activeConnections_.push_back(connection);
                 }
-                if (!reactor_->addHandler(connection, true, false)) {
+                if (!addConnectionToReactor(reactor, connection)) {
                     connection->closeFromServer();
                 }
                 continue;
@@ -241,6 +285,22 @@ private:
             }
             return;
         }
+    }
+
+    // Reactor handler tables belong to their reactor thread, so a connection
+    // owned by another reactor is registered from inside that reactor.
+    static bool addConnectionToReactor(
+        const std::shared_ptr<detail::Reactor>& reactor,
+        const std::shared_ptr<NativeConnection>& connection
+    ) {
+        if (reactor->isReactorThread()) {
+            return reactor->addHandler(connection, true, false);
+        }
+        return reactor->post([reactor, connection] {
+            if (!reactor->addHandler(connection, true, false)) {
+                connection->closeFromServer();
+            }
+        });
     }
 
     // An open server keeps the root event loop running, as a long-lived
@@ -307,13 +367,14 @@ private:
     int32_t idleTimeoutMillis_;
     int32_t responseTimeoutMillis_;
     int32_t maxRequestsPerConnection_;
-    doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest_;
+    std::shared_ptr<detail::RequestDispatcher> dispatcher_;
 
     mutable std::mutex mutex_;
     bool closed_ = false;
     bool keepingAlive_ = false;
     int listenFd_;
-    std::shared_ptr<detail::Reactor> reactor_;
+    std::vector<std::shared_ptr<detail::Reactor>> reactors_;
+    size_t nextReactor_ = 0;
     std::vector<std::weak_ptr<NativeConnection>> activeConnections_;
 };
 

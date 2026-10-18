@@ -5,6 +5,7 @@ import { HttpHeader } from "std/http"
 
 import {
   Request,
+  RequestHandler,
   Response,
   ResponseCompression,
   Server,
@@ -18,6 +19,7 @@ import {
   WebSocketText,
   WebSocketWritable,
   createWebSocketConnection,
+  requestHandler,
 } from "../index"
 
 import class NativeHttpTestRequest from "../native_http_server_test_support.hpp" as doof_http_server_test::NativeHttpTestRequest {
@@ -40,6 +42,17 @@ import class NativeWebSocketTestClient from "../native_http_server_test_support.
   isolated static startExchangeThreeTexts(host: string, port: int, requestText: string, first: string, second: string, third: string): NativeWebSocketTestClient
   isolated static startHandshakeOnly(host: string, port: int, requestText: string): NativeWebSocketTestClient
   isolated wait(): string
+}
+
+// Answers on its own actor so pool tests can see which handler served a request.
+class PoolTestWorker {
+  readonly id: int
+
+  handler(): RequestHandler {
+    return requestHandler((request: Request): none => {
+      request.respond(Response.text(200, "worker ${this.id} ${request.path}\n")) else {}
+    })
+  }
 }
 
 class DispatchState {
@@ -1264,4 +1277,47 @@ export function testRejectedRequestClosesBeforePipelinedBytesAreDispatched(): no
   Assert.isTrue(response.contains("HTTP/1.1 400 Bad Request"))
   Assert.equal(response.split("HTTP/1.1").length, 2)
   Assert.isTrue(response.contains("Connection: close"))
+}
+
+readonly POOL_REQUESTS = "GET /a HTTP/1.1\r\nHost: example.test\r\n\r\nGET /b HTTP/1.1\r\nHost: example.test\r\n\r\nGET /c HTTP/1.1\r\nHost: example.test\r\n\r\nGET /d HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n"
+
+export function testListenPoolSpreadsRequestsAcrossHandlerActors(): none {
+  first := Actor<PoolTestWorker>(0)
+  second := Actor<PoolTestWorker>(1)
+  server := Server.listenPool{
+    options: ServerOptions { port: 0, keepsAlive: false },
+    handlers: [first.handler(), second.handler()],
+  }!
+
+  response := NativeHttpTestRequest.start(server.host, server.port, POOL_REQUESTS).wait()
+  server.close()!
+
+  Assert.equal(response.split("HTTP/1.1 200 OK").length, 5)
+  Assert.isTrue(response.contains("worker 0 "))
+  Assert.isTrue(response.contains("worker 1 "))
+  Assert.equal(server.shedCount(), 0L)
+}
+
+export function testSetHandlersRoutesNewRequestsToReplacementHandlers(): none {
+  first := Actor<PoolTestWorker>(0)
+  second := Actor<PoolTestWorker>(1)
+  server := Server.listenPool{
+    options: ServerOptions { port: 0, keepsAlive: false },
+    handlers: [first.handler(), second.handler()],
+  }!
+  server.setHandlers([second.handler()])!
+
+  response := NativeHttpTestRequest.start(server.host, server.port, POOL_REQUESTS).wait()
+  server.close()!
+
+  Assert.equal(response.split("worker 1 ").length, 5)
+  Assert.isFalse(response.contains("worker 0 "))
+}
+
+export function testListenPoolRejectsEmptyHandlers(): none {
+  empty: readonly RequestHandler[] := []
+  case Server.listenPool{ options: ServerOptions { port: 0, keepsAlive: false }, handlers: empty } {
+    _: Success -> Assert.fail("expected listenPool to reject an empty handler list"),
+    f: Failure -> Assert.equal(f.error.kind, "config"),
+  }
 }

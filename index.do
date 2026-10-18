@@ -1,7 +1,7 @@
 export { ServerError } from "./errors"
 export { Request } from "./request"
 export { Response, ResponseCompression } from "./response"
-export { Server, ServerOptions } from "./server"
+export { RequestHandler, Server, ServerOptions, requestHandler } from "./server"
 export {
   WEBSOCKET_CLOSE_GOING_AWAY,
   WEBSOCKET_CLOSE_INTERNAL_ERROR,

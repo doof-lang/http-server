@@ -1,11 +1,8 @@
 import { CliSpec } from "std/cli"
 import { runMainEventLoop } from "std/event"
-import { Request, Response, Server } from "std/http-server"
+import { Server } from "std/http-server"
 import { parseInt } from "std/parse"
-import { WorkerPool } from "./pool"
-import { queryInt } from "./workload"
-
-readonly MAX_WORKERS = 256
+import { MAX_WORKERS, WorkerPool } from "./pool"
 
 function main(args: string[]): int {
   spec := CliSpec.create("server", "Multithreaded HTTP server backed by a pool of worker actors")
@@ -32,34 +29,16 @@ function main(args: string[]): int {
   pool := WorkerPool()
   pool.resize(workers)
 
-  // The server posts every request to this root-domain callback. Admin
-  // endpoints touch pool state, so they stay here; everything else goes to a
-  // worker actor.
-  server := Server.listen{
+  // The server posts each request straight to one of the workers' handlers,
+  // in round-robin order. Workers forward /admin/* back to the pool here.
+  server := Server.listenPool{
     options: { port },
-    onRequest: (request: Request): none => {
-      case request.path {
-        "/admin/workers" -> {
-          if request.method == "POST" {
-            count := queryInt(request, "count", 0, MAX_WORKERS)
-            if count < 1 {
-              request.respond(Response.text(400, "count must be 1..${MAX_WORKERS}\n")) else {}
-              return
-            }
-            pool.resize(count)
-          }
-          request.respond(Response.text(200, "workers=${pool.size()}\n")) else {}
-        },
-        "/admin/stats" -> {
-          request.respond(Response.text(200, pool.stats())) else {}
-        },
-        _ -> pool.dispatch(request),
-      }
-    },
+    handlers: pool.activeHandlers(),
   } else error {
     println("Could not start server: ${error.message}")
     return 1
   }
+  pool.attach(server)
 
   println("Listening on http://${server.host}:${server.port}/ with ${workers} workers")
   runMainEventLoop()

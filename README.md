@@ -48,6 +48,51 @@ An open server keeps `runMainEventLoop()` running until `close()`. Create the
 handler inside an actor to handle requests on that actor instead of the root
 event loop; pass it callbacks of your own to report results back.
 
+## Handling Requests In Parallel
+
+A handler runs one request at a time. To spread requests across several
+actors, create a `RequestHandler` inside each one with `requestHandler(...)` and
+pass them all to `Server.listenPool`. The server posts each request straight to
+the next handler in round-robin order, so no dispatcher actor sits on the
+request path.
+
+```doof
+import { Request, RequestHandler, Response, Server, ServerOptions, requestHandler } from "std/http-server"
+import { runMainEventLoop } from "std/event"
+
+class Worker {
+  readonly id: int
+
+  handler(): RequestHandler {
+    return requestHandler((request: Request): none => {
+      request.respond(Response.text(200, "hello from worker ${this.id}\n")) else {}
+    })
+  }
+}
+
+function main(): int {
+  workers := [Actor<Worker>(0), Actor<Worker>(1), Actor<Worker>(2), Actor<Worker>(3)]
+  handlers: RequestHandler[] := []
+  for worker of workers {
+    handlers.push(worker.handler())
+  }
+
+  server := Server.listenPool{
+    options: ServerOptions { port: 8080 },
+    handlers: handlers.drainToReadonly(),
+  }!
+
+  runMainEventLoop()
+  server.close()!
+  return 0
+}
+```
+
+A handler whose mailbox is full is skipped for that request; when every handler
+is full the server answers `503 Service Unavailable` and counts it in
+`server.shedCount()`. `server.setHandlers(handlers)` replaces the set for new
+requests, for example to grow or shrink the pool.
+
 ## Samples
 
 - `samples/simple` serves files from a local `public` directory and shows
@@ -59,7 +104,8 @@ event loop; pass it callbacks of your own to report results back.
 ## Request Flow
 
 1. The native reactor reads and parses a complete HTTP request.
-2. The server posts the `Request` to the handler with `tryPost`.
+2. The server posts the `Request` to the handler with `tryPost`; with
+   `Server.listenPool` it picks the next handler in round-robin order.
 3. The handler runs on its owning actor.
 4. The handler sends the HTTP response by calling `request.respond(response)`.
 5. For WebSocket upgrades, the handler calls
@@ -67,7 +113,7 @@ event loop; pass it callbacks of your own to report results back.
 
 If the handler's actor mailbox is full, or the actor has retired, the listener
 rejects the request with `503 Service Unavailable` instead of growing an
-unbounded queue.
+unbounded queue. A pool server tries the other handlers first.
 
 ## Request And Response
 
@@ -188,7 +234,11 @@ else keeps the loop alive.
 ## Platform Notes
 
 The internal reactor has an explicit platform seam. macOS uses `kqueue`; other
-POSIX platforms use a portable `poll` fallback.
+POSIX platforms use a portable `poll` fallback. A server runs one reactor
+thread per four cores, up to four; the first also accepts connections, and
+accepted connections are spread across all of them. Responses are written on
+the thread that calls `request.respond(...)`, and the reactor waits for
+writability only when the socket cannot take the whole response.
 
 The first implementation does not yet support streaming request bodies,
 WebSocket compression extensions, or concurrent HTTP/1.1 pipeline handling.

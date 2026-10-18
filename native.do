@@ -1,6 +1,6 @@
 import { BlobBuilder } from "std/blob"
 
-export import class NativeExchange from "./native_http_server.hpp" as doof_http_server::NativeExchange {
+export import isolated class NativeExchange from "./native_http_server.hpp" as doof_http_server::NativeExchange {
   isolated method(): string
   isolated target(): string
   isolated version(): string
@@ -74,6 +74,8 @@ export import isolated class NativeHttpServer from "./native_http_server.hpp" as
 
   isolated host(): string
   isolated port(): int
+  isolated setHandlers(handlers: ((exchange: NativeExchange): none)[]): Result<none, string>
+  isolated shedCount(): long
   isolated close(): Result<none, string>
 }
 

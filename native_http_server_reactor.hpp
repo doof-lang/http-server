@@ -27,7 +27,12 @@ public:
     virtual void updateHandler(int fd, bool wantsRead, bool wantsWrite) = 0;
     virtual void removeHandler(int fd) = 0;
     virtual bool post(std::function<void()> task) = 0;
+    virtual bool isReactorThread() const = 0;
 };
+
+// Idle and response timeouts are checked at most this often, rather than on
+// every event batch, so busy reactors do not rescan every connection.
+constexpr auto timerScanInterval = std::chrono::milliseconds(10);
 
 #if defined(__APPLE__)
 
@@ -122,15 +127,24 @@ public:
     }
 
     bool post(std::function<void()> task) override {
+        bool needsWake = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) {
                 return false;
             }
+            // A non-empty queue already has a wakeup on the way.
+            needsWake = tasks_.empty();
             tasks_.push_back(std::move(task));
         }
-        wake();
+        if (needsWake) {
+            wake();
+        }
         return true;
+    }
+
+    bool isReactorThread() const override {
+        return reactorThread_.load(std::memory_order_relaxed) == std::this_thread::get_id();
     }
 
 private:
@@ -172,7 +186,9 @@ private:
     }
 
     void run() {
+        reactorThread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
         std::vector<struct kevent> events(64);
+        auto lastTimerScan = std::chrono::steady_clock::now();
         while (true) {
             timespec timeout {};
             timeout.tv_nsec = 100 * 1000 * 1000;
@@ -209,14 +225,18 @@ private:
                 }
             }
 
-            std::vector<std::shared_ptr<ReactorHandler>> handlers;
-            handlers.reserve(handlers_.size());
-            for (const auto& entry : handlers_) {
-                handlers.push_back(entry.second);
-            }
-            for (const auto& handler : handlers) {
-                if (handlers_.find(handler->fd()) != handlers_.end()) {
-                    handler->onTimer();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastTimerScan >= timerScanInterval) {
+                lastTimerScan = now;
+                std::vector<std::shared_ptr<ReactorHandler>> handlers;
+                handlers.reserve(handlers_.size());
+                for (const auto& entry : handlers_) {
+                    handlers.push_back(entry.second);
+                }
+                for (const auto& handler : handlers) {
+                    if (handlers_.find(handler->fd()) != handlers_.end()) {
+                        handler->onTimer();
+                    }
                 }
             }
 
@@ -232,6 +252,7 @@ private:
     bool running_ = false;
     bool stopping_ = false;
     std::thread thread_;
+    std::atomic<std::thread::id> reactorThread_ {};
     mutable std::mutex mutex_;
     std::deque<std::function<void()>> tasks_;
     std::unordered_map<int, std::shared_ptr<ReactorHandler>> handlers_;
@@ -318,15 +339,24 @@ public:
     }
 
     bool post(std::function<void()> task) override {
+        bool needsWake = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) {
                 return false;
             }
+            // A non-empty queue already has a wakeup on the way.
+            needsWake = tasks_.empty();
             tasks_.push_back(std::move(task));
         }
-        wake();
+        if (needsWake) {
+            wake();
+        }
         return true;
+    }
+
+    bool isReactorThread() const override {
+        return reactorThread_.load(std::memory_order_relaxed) == std::this_thread::get_id();
     }
 
 private:
@@ -379,6 +409,8 @@ private:
     }
 
     void run() {
+        reactorThread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
+        auto lastTimerScan = std::chrono::steady_clock::now();
         while (true) {
             std::vector<pollfd> fds;
             fds.push_back(pollfd { wakeReadFd_, POLLIN, 0 });
@@ -430,7 +462,11 @@ private:
                 }
             }
 
-            runTimers();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastTimerScan >= timerScanInterval) {
+                lastTimerScan = now;
+                runTimers();
+            }
 
             if (isStopping()) {
                 return;
@@ -442,6 +478,7 @@ private:
     int wakeWriteFd_ = -1;
     bool stopping_ = false;
     std::thread thread_;
+    std::atomic<std::thread::id> reactorThread_ {};
     mutable std::mutex mutex_;
     std::deque<std::function<void()>> tasks_;
     std::unordered_map<int, Interest> interests_;

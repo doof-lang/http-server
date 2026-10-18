@@ -6,29 +6,33 @@ connection counts.
 
 | File | Role |
 | --- | --- |
-| `server.do` | Parses options, starts the server, handles `/admin/*` on the root domain |
-| `pool.do` | `Worker` (one per actor) and the root-domain `WorkerPool` dispatcher |
+| `server.do` | Parses options and starts the server with `Server.listenPool` |
+| `pool.do` | `Worker` (one per actor) and the root-domain `WorkerPool`, which owns the workers and handles `/admin/*` |
 | `workload.do` | Isolated request handling: `/hello`, `/cpu`, `/sleep` |
 | `loadtest.do` | Concurrent client actors that sweep worker and connection counts |
 
 ## How it works
 
-`Server.listen` posts every request to one callback on the actor that created
-it, so a server whose callback is on the root domain handles one request at a
-time. To run requests in parallel, the root callback works as a dispatcher:
+`Server.listen` posts every request to one callback, so a server with a single
+handler runs one request at a time. This sample uses `Server.listenPool`
+instead, which posts each request straight to one of several worker actors:
 
 1. At startup `WorkerPool.resize(n)` creates `n` `Actor<Worker>` values. Each
-   worker returns a callback from `handler()`. That callback belongs to the
-   worker's actor, so posting a `Request` to it runs `Worker.handle` there.
-2. For each request, `WorkerPool.dispatch` picks the next worker in round-robin
-   order and calls `handler.tryPost(request)`. `Request` is deeply immutable
-   (its native responder is an `import isolated class`), so it can cross to
-   the worker.
+   worker returns a `RequestHandler` from `handler()`, made with
+   `requestHandler(...)` inside the worker's actor, so requests posted to it
+   run `Worker.handle` there.
+2. `Server.listenPool` receives the handlers. Its native I/O threads pick the
+   next handler in round-robin order for each request and post to it
+   directly; the root domain is not on the request path.
 3. The worker calls the isolated `respondTo` function and then
-   `request.respond(...)`. The response goes back through the responder inside
-   the request, not through the dispatcher.
-4. `tryPost` never blocks the event loop. If a worker's mailbox is full, the
-   pool answers `503` right away instead of queueing without limit.
+   `request.respond(...)`. The response is written on the worker's thread
+   through the responder inside the request.
+4. Posting never blocks the I/O threads. A worker whose mailbox is full is
+   skipped; if every worker is full the server answers `503` right away
+   instead of queueing without limit.
+5. `/admin/*` requests reach a worker like any other. The worker forwards them
+   to a root-domain callback owned by `WorkerPool`, which can change pool
+   state and calls `server.setHandlers(...)` to resize the pool.
 
 Each worker handles one request at a time, in order. Different workers run at
 the same time on the runtime's shared thread pool, which by default has one CPU
@@ -101,7 +105,10 @@ workers  conns  active     req/s   p50 ms   p95 ms   p99 ms     503 errors
 
 The `/sleep` endpoint scales the same way (17 → 71 → 138 req/s for 1, 4, and 8
 workers at 50 ms per request). Blocking work needs workers just as CPU work
-does, because a sleeping worker cannot start its next request.
+does, because a sleeping worker cannot start its next request. `Thread.sleep`
+keeps its runtime CPU token while it sleeps, though, so no more workers than
+there are cores can sleep at once: past the core count, extra workers do not
+raise `/sleep` throughput.
 
 ## Reading the numbers
 
@@ -118,8 +125,10 @@ does, because a sleeping worker cannot start its next request.
   platforms `std/http` uses `NSURLSession`, which costs about 250 µs of
   client CPU per request. With 8 workers and 12 connections at `/hello`,
   the load generator reaches about 13,000 req/s (release or debug builds
-  alike) while using about three cores. In the same setup `ab -k -c 12`
-  reaches about 45,000 req/s against a release (`doof package`) server.
+  alike) while using about three cores. `ab -k -c 32` reaches about
+  140,000 req/s against a release (`doof package`) server, and a minimal
+  C++ kqueue server reaches about 210,000 req/s, so on loopback `ab` itself
+  is close to its limit.
 - To measure the server alone, use a keep-alive benchmark client. In the same
   setup, `ab` reached about 1,275, 4,850, and 9,200 req/s at
   `/cpu?n=200000` with 1, 4, and 8 workers:

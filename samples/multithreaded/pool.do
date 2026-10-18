@@ -1,20 +1,31 @@
-import { Request, Response } from "std/http-server"
-import { respondTo } from "./workload"
+import { Request, RequestHandler, Response, Server, requestHandler } from "std/http-server"
+import { queryInt, respondTo } from "./workload"
+
+export readonly MAX_WORKERS = 256
 
 // One worker's mutable state. Each worker lives inside its own Actor<Worker>,
 // so its mailbox serializes the requests it receives while different workers
 // run in parallel on the runtime's thread pool.
 export class Worker {
   readonly id: int
+  // Root-domain callback for /admin/* requests, which touch pool state.
+  readonly admin: (request: Request): none
   let served: long = 0L
 
-  // Returns a callback owned by this worker's actor. Posting a Request to it
-  // queues `handle` on this worker instead of on the caller.
-  handler(): (request: Request): none {
-    return (request: Request): none => this.handle(request)
+  // Returns a handler owned by this worker's actor. The server posts requests
+  // straight to it, so they run here without passing through the root domain.
+  handler(): RequestHandler {
+    return requestHandler((request: Request): none => this.handle(request))
   }
 
   handle(request: Request): none {
+    if request.path.startsWith("/admin/") {
+      case this.admin.tryPost(request) {
+        _: Success -> {},
+        f: Failure -> request.respond(Response.text(503, "admin ${f.error}\n")) else {},
+      }
+      return
+    }
     this.served += 1L
     request.respond(respondTo(this.id, request)) else error {
       // The client disconnected or timed out before we answered.
@@ -25,44 +36,45 @@ export class Worker {
   servedCount(): long => this.served
 }
 
-// Lives on the root domain and spreads requests across worker actors in
-// round-robin order. Dispatch only posts a message, so the root event loop
-// stays cheap while the workers do the real work.
+// Lives on the root domain. It owns the worker actors and tells the server
+// which of them receive new requests; it is not on the request path.
 export class WorkerPool {
   private workers: Actor<Worker>[] = []
-  private handlers: ((request: Request): none)[] = []
+  private handlers: RequestHandler[] = []
   private let active: int = 0
-  private let next: int = 0
-  private let rejected: long = 0L
+  private let server: Server | none = none
 
   // Changes how many workers receive new requests. Growing creates actors;
   // shrinking parks the extra ones (they finish what they already accepted).
   resize(count: int): none {
     while this.workers.length < count {
-      worker := Actor<Worker>(this.workers.length)
+      worker := Actor<Worker>(this.workers.length, (request: Request): none => this.handleAdmin(request))
       this.handlers.push(worker.handler())
       this.workers.push(worker)
     }
     this.active = count
-    this.next = 0
+    server := this.server else {
+      return
+    }
+    server.setHandlers(this.activeHandlers()) else error {
+      println("could not resize pool: ${error.message}")
+    }
+  }
+
+  // The handlers of the first `size()` workers, for Server.listenPool.
+  activeHandlers(): readonly RequestHandler[] {
+    selected: RequestHandler[] := []
+    for i of 0..<this.active {
+      selected.push(this.handlers[i])
+    }
+    return selected.drainToReadonly()
+  }
+
+  attach(server: Server): none {
+    this.server = server
   }
 
   size(): int => this.active
-
-  dispatch(request: Request): none {
-    handler := this.handlers[this.next]
-    this.next = (this.next + 1) % this.active
-
-    // tryPost never blocks the event loop. A full worker mailbox sheds the
-    // request with 503 instead of queueing without bound.
-    case handler.tryPost(request) {
-      _: Success -> {},
-      f: Failure -> {
-        this.rejected += 1L
-        request.respond(Response.text(503, "worker ${f.error}\n")) else {}
-      },
-    }
-  }
 
   // Per-worker request counts. Each call waits for that worker to finish the
   // requests already in its mailbox, so call it when the server is quiet.
@@ -74,6 +86,30 @@ export class WorkerPool {
       total += served
       perWorker += if i == 0 then "${served}" else ",${served}"
     }
-    return "workers=${this.active} total=${total} rejected=${this.rejected} served=${perWorker}\n"
+    server := this.server else {
+      return "workers=${this.active} total=${total} served=${perWorker}\n"
+    }
+    rejected := server.shedCount()
+    return "workers=${this.active} total=${total} rejected=${rejected} served=${perWorker}\n"
+  }
+
+  private handleAdmin(request: Request): none {
+    case request.path {
+      "/admin/workers" -> {
+        if request.method == "POST" {
+          count := queryInt(request, "count", 0, MAX_WORKERS)
+          if count < 1 {
+            request.respond(Response.text(400, "count must be 1..${MAX_WORKERS}\n")) else {}
+            return
+          }
+          this.resize(count)
+        }
+        request.respond(Response.text(200, "workers=${this.size()}\n")) else {}
+      },
+      "/admin/stats" -> {
+        request.respond(Response.text(200, this.stats())) else {}
+      },
+      _ -> request.respond(Response.text(404, "not found\n")) else {},
+    }
   }
 }

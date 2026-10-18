@@ -15,7 +15,7 @@ public:
         int32_t idleTimeoutMillis,
         int32_t responseTimeoutMillis,
         int32_t maxRequestsPerConnection,
-        doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest,
+        std::shared_ptr<detail::RequestDispatcher> dispatcher,
         std::shared_ptr<detail::Reactor> reactor
     )
         : transport_(std::move(transport)),
@@ -23,7 +23,7 @@ public:
           idleTimeoutMillis_(idleTimeoutMillis),
           responseTimeoutMillis_(responseTimeoutMillis),
           maxRequestsPerConnection_(maxRequestsPerConnection),
-          onRequest_(std::move(onRequest)),
+          dispatcher_(std::move(dispatcher)),
           reactor_(std::move(reactor)),
           lastActivityAt_(std::chrono::steady_clock::now()) {}
 
@@ -41,27 +41,22 @@ public:
         const std::shared_ptr<std::vector<uint8_t>>& body,
         bool keepAlive
     ) {
-        const auto safeBody = body ? body : std::make_shared<std::vector<uint8_t>>();
-        std::vector<uint8_t> bytes;
-        bytes.reserve(responseText.size() + safeBody->size());
-        bytes.insert(bytes.end(), responseText.begin(), responseText.end());
-        bytes.insert(bytes.end(), safeBody->begin(), safeBody->end());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || closeAfterWrite_) {
                 return doof::Failure<std::string>{"disconnected|request is no longer writable"};
             }
-            writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
+            writeBuffer_.reserve(writeBuffer_.size() + responseText.size() + (body ? body->size() : 0));
+            writeBuffer_.insert(writeBuffer_.end(), responseText.begin(), responseText.end());
+            if (body) {
+                writeBuffer_.insert(writeBuffer_.end(), body->begin(), body->end());
+            }
             closeAfterWrite_ = closeAfterWrite_ || !keepAlive;
         }
 
-        const auto self = shared_from_this();
-        if (!reactor_->post([self] {
-            self->armWriteInterest();
-        })) {
-            closeFromServer();
-            return doof::Failure<std::string>{"closed|server is no longer accepting work"};
-        }
+        // Write from the responding thread; the reactor only takes over if the
+        // socket cannot accept the whole response yet.
+        flushWrites();
         return doof::Success<void>{};
     }
 
@@ -80,13 +75,7 @@ public:
             writeBuffer_.insert(writeBuffer_.end(), bytes.begin(), bytes.end());
         }
 
-        const auto self = shared_from_this();
-        if (!reactor_->post([self] {
-            self->armWriteInterest();
-        })) {
-            closeFromServer();
-            return doof::Failure<std::string>{"closed|server is no longer accepting work"};
-        }
+        flushWrites();
         return doof::Success<void>{};
     }
 
@@ -217,7 +206,7 @@ public:
     }
 
     void onReadable() override {
-        std::vector<char> buffer(4096);
+        char buffer[16 * 1024];
         while (true) {
             std::shared_ptr<detail::ConnectionTransport> transport;
             {
@@ -228,11 +217,16 @@ public:
                 transport = transport_;
             }
 
-            const ssize_t readCount = transport->read(buffer.data(), buffer.size());
+            const ssize_t readCount = transport->read(buffer, sizeof(buffer));
             if (readCount > 0) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                readBuffer_.append(buffer.data(), static_cast<size_t>(readCount));
+                readBuffer_.append(buffer, static_cast<size_t>(readCount));
                 lastActivityAt_ = std::chrono::steady_clock::now();
+                // A short read drained the socket. Interest is level-triggered,
+                // so stopping here saves the recv that would only see EAGAIN.
+                if (static_cast<size_t>(readCount) < sizeof(buffer)) {
+                    break;
+                }
                 continue;
             }
             if (readCount == 0) {
@@ -257,74 +251,7 @@ public:
     }
 
     void onWritable() override {
-        bool writeFailed = false;
-        while (true) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (closed_) {
-                    return;
-                }
-                if (writeOffset_ >= writeBuffer_.size()) {
-                    break;
-                }
-
-                auto transport = transport_;
-                if (!transport) {
-                    writeFailed = true;
-                    break;
-                }
-
-                const ssize_t written = transport->write(
-                    writeBuffer_.data() + writeOffset_,
-                    writeBuffer_.size() - writeOffset_
-                );
-                if (written < 0 && errno == EINTR) {
-                    continue;
-                }
-                if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                    return;
-                }
-                if (written <= 0) {
-                    writeFailed = true;
-                    break;
-                }
-                writeOffset_ += static_cast<size_t>(written);
-            }
-        }
-
-        if (writeFailed) {
-            closeFromReactor();
-            return;
-        }
-
-        bool shouldClose = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (closed_) {
-                return;
-            }
-            writeBuffer_.clear();
-            writeOffset_ = 0;
-            shouldClose = closeAfterWrite_;
-            if (!shouldClose && !websocketMode_ && !streamingResponse_) {
-                awaitingResponse_ = false;
-                lastActivityAt_ = std::chrono::steady_clock::now();
-            } else if (!shouldClose) {
-                lastActivityAt_ = std::chrono::steady_clock::now();
-            }
-        }
-
-        if (shouldClose) {
-            closeFromReactor();
-            return;
-        }
-
-        reactor_->updateHandler(fd(), shouldReadAfterWrite(), false);
-        if (isWebSocketMode()) {
-            notifyWebSocketWritable();
-        } else {
-            tryDispatchBufferedRequest();
-        }
+        flushWrites();
     }
 
     void closeFromServer() {
@@ -362,18 +289,111 @@ public:
 
 private:
     void armWriteInterest() {
-        int currentFd = -1;
-        bool wantsRead = true;
+        flushWrites();
+    }
+
+    // Sends buffered output on the calling thread, which may be a worker
+    // rather than the reactor. Only a socket that cannot take everything
+    // waits for the reactor's writable event.
+    void flushWrites() {
+        bool writeFailed = false;
+        bool blocked = false;
+        bool drained = false;
+        bool shouldClose = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_) {
                 return;
             }
-            currentFd = transport_ ? transport_->fd() : -1;
-            wantsRead = shouldReadLocked();
+            const bool hadPending = writeOffset_ < writeBuffer_.size();
+            auto transport = transport_;
+            if (hadPending && !transport) {
+                writeFailed = true;
+            }
+            while (!writeFailed && writeOffset_ < writeBuffer_.size()) {
+                const ssize_t written = transport->write(
+                    writeBuffer_.data() + writeOffset_,
+                    writeBuffer_.size() - writeOffset_
+                );
+                if (written < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    blocked = true;
+                    break;
+                }
+                if (written <= 0) {
+                    writeFailed = true;
+                    break;
+                }
+                writeOffset_ += static_cast<size_t>(written);
+            }
+
+            // Only the call that drains the buffer finishes the response, so
+            // a racing flush cannot reset state for the next request.
+            if (hadPending && !writeFailed && !blocked) {
+                drained = true;
+                writeBuffer_.clear();
+                writeOffset_ = 0;
+                shouldClose = closeAfterWrite_;
+                if (!shouldClose && !websocketMode_ && !streamingResponse_) {
+                    awaitingResponse_ = false;
+                }
+                if (!shouldClose) {
+                    lastActivityAt_ = std::chrono::steady_clock::now();
+                }
+            }
         }
-        reactor_->updateHandler(currentFd, wantsRead, true);
-        onWritable();
+
+        if (writeFailed || shouldClose) {
+            closeCommon(reactor_->isReactorThread());
+            return;
+        }
+        syncInterest();
+        if (!drained) {
+            return;
+        }
+        if (isWebSocketMode()) {
+            notifyWebSocketWritable();
+        } else {
+            tryDispatchBufferedRequest();
+        }
+    }
+
+    // Brings the reactor's read/write interest in line with the connection
+    // state. Only the reactor thread changes registrations, so other threads
+    // post the update; most calls find nothing to change and skip the syscall.
+    void syncInterest() {
+        int currentFd = -1;
+        bool wantsRead = true;
+        bool wantsWrite = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_) {
+                return;
+            }
+            wantsRead = shouldReadLocked();
+            wantsWrite = writeOffset_ < writeBuffer_.size();
+            if (wantsRead == readInterest_ && wantsWrite == writeInterest_) {
+                return;
+            }
+            if (reactor_->isReactorThread()) {
+                readInterest_ = wantsRead;
+                writeInterest_ = wantsWrite;
+                currentFd = transport_ ? transport_->fd() : -1;
+            }
+        }
+        if (currentFd >= 0) {
+            reactor_->updateHandler(currentFd, wantsRead, wantsWrite);
+            return;
+        }
+        if (reactor_->isReactorThread()) {
+            return;
+        }
+        const auto self = shared_from_this();
+        if (!reactor_->post([self] { self->syncInterest(); })) {
+            closeFromServer();
+        }
     }
 
     bool isWebSocketMode() const {
@@ -474,11 +494,6 @@ private:
         return !websocketMode_ || !websocketReadPaused_;
     }
 
-    bool shouldReadAfterWrite() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return shouldReadLocked();
-    }
-
     bool handleWebSocketEventPressure(int32_t pressure) {
         if (pressure == 1) {
             pauseWebSocketReads();
@@ -492,35 +507,27 @@ private:
     }
 
     void pauseWebSocketReads() {
-        int currentFd = -1;
-        bool wantsWrite = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closed_ || !websocketMode_) {
                 return;
             }
             websocketReadPaused_ = true;
-            currentFd = transport_ ? transport_->fd() : -1;
-            wantsWrite = writeOffset_ < writeBuffer_.size();
         }
-        reactor_->updateHandler(currentFd, false, wantsWrite);
+        syncInterest();
     }
 
     void resumeWebSocketReads() {
         const auto self = shared_from_this();
         if (!reactor_->post([self] {
-            int currentFd = -1;
-            bool wantsWrite = false;
             {
                 std::lock_guard<std::mutex> lock(self->mutex_);
                 if (self->closed_ || !self->websocketMode_) {
                     return;
                 }
                 self->websocketReadPaused_ = false;
-                currentFd = self->transport_ ? self->transport_->fd() : -1;
-                wantsWrite = self->writeOffset_ < self->writeBuffer_.size();
             }
-            self->reactor_->updateHandler(currentFd, true, wantsWrite);
+            self->syncInterest();
             self->processWebSocketFrames();
         })) {
             closeFromServer();
@@ -561,9 +568,9 @@ private:
 
         auto responder = std::make_shared<NativeResponder>(shared_from_this(), attempt.request);
         auto exchange = std::make_shared<NativeExchange>(std::move(attempt.request), responder);
-        // Requests run on the handler's owning actor; a full or retired
-        // owner sheds the request instead of blocking the reactor thread.
-        if (doof::is_failure(onRequest_.tryPost(std::move(exchange)))) {
+        // Requests run on a handler's owning actor; when every handler is
+        // full or retired the request is shed instead of blocking the reactor.
+        if (!dispatcher_->dispatch(exchange)) {
             enqueueImmediateClose(detail::simpleResponseBytes(503, "Service Unavailable\n"));
         }
     }
@@ -624,6 +631,9 @@ private:
     bool streamResponseKeepAlive_ = false;
     bool websocketCloseEmitted_ = false;
     bool closeAfterWrite_ = false;
+    // Registered reactor interest; changed only on the reactor thread.
+    bool readInterest_ = true;
+    bool writeInterest_ = false;
     int64_t maxBodyBytes_;
     int32_t idleTimeoutMillis_;
     int32_t responseTimeoutMillis_;
@@ -632,7 +642,7 @@ private:
     std::string readBuffer_;
     std::vector<uint8_t> writeBuffer_;
     size_t writeOffset_ = 0;
-    doof::callback<void(std::shared_ptr<NativeExchange>)> onRequest_;
+    std::shared_ptr<detail::RequestDispatcher> dispatcher_;
     std::shared_ptr<detail::Reactor> reactor_;
     std::shared_ptr<detail::WebSocketSession> websocketSession_;
     std::chrono::steady_clock::time_point lastActivityAt_;

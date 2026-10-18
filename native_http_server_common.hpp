@@ -3,6 +3,7 @@
 #include "doof_runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>

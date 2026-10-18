@@ -2,20 +2,24 @@
 
 `std/http-server` is an inbound HTTP primitive. Native socket I/O accepts and
 parses requests, then posts immutable `Request` snapshots to the handler passed
-to `Server.listen`. The handler runs on the actor that created it and completes
-each exchange through the responder embedded in the request.
+to `Server.listen`, or to one of the handlers passed to `Server.listenPool`.
+Each handler runs on the actor that created it and completes each exchange
+through the responder embedded in the request.
 
 ## Request Flow
 
 1. The native reactor accepts and parses a complete request.
 2. The server posts the `Request` to the handler with `tryPost`.
+   `Server.listenPool` picks the next handler in round-robin order and skips
+   handlers whose mailbox is full.
 3. The handler runs on its owning actor, in arrival order.
 4. The handler calls `request.respond(response)` or
    `request.upgradeToWebSocket(connection)`.
 
 Responses do not go back through the handler. If the handler's actor mailbox is
 full, or the actor has retired, the server rejects the request with
-`503 Service Unavailable`. An open server keeps `runMainEventLoop()` running
+`503 Service Unavailable`; a pool server does this only when every handler is
+full, and counts it in `server.shedCount()`. An open server keeps `runMainEventLoop()` running
 unless `ServerOptions.keepsAlive` is `false`.
 
 ## Requests And Responses
@@ -58,9 +62,12 @@ compression extensions, or concurrent HTTP/1.1 pipelining.
 
 Server:
 
-- `Server`
+- `Server`, with `Server.listen`, `Server.listenPool`, `setHandlers`, and
+  `shedCount`
 - `ServerOptions`
 - `ServerError`
+- `RequestHandler` and `requestHandler`, which wrap a callback on the actor
+  that calls it
 
 HTTP:
 
