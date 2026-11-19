@@ -22,12 +22,7 @@ export class Request {
 
   header(name: string): string | none {
     lowerName := name.toLowerCase()
-    for entry of this.headers {
-      if entry.name.toLowerCase() == lowerName {
-        return entry.value
-      }
-    }
-    return none
+    return this.headers.find(=> it.name.toLowerCase() == lowerName)?.value
   }
 
   headerValues(name: string): readonly string[] {

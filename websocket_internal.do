@@ -40,7 +40,7 @@ export function validateWebSocketHandshake(
     return Failure { error: "bad-websocket-handshake|invalid Sec-WebSocket-Key" }
   }
 
-  accept := encodeBase64(sha1String(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+  accept := encodeBase64(sha1String("${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
   return Success { value: accept }
 }
 

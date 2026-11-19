@@ -22,7 +22,7 @@ so the handler never needs a reply path back to the server.
 import { Request, Response, Server, ServerOptions } from "std/http-server"
 import { runMainEventLoop } from "std/event"
 
-function handleRequest(request: Request): void {
+function handleRequest(request: Request): none {
   response := case request.path {
     "/health" -> Response.jsonValue(200, { status: "ok" }),
     "/" -> Response.text(200, "hello\n"),
@@ -162,7 +162,7 @@ import {
   createWebSocketConnection,
 } from "std/http-server"
 
-function handleSocketEvent(event: WebSocketEvent): void {
+function handleSocketEvent(event: WebSocketEvent): none {
   text := event as WebSocketText
   case text {
     s: Success -> {
@@ -172,7 +172,7 @@ function handleSocketEvent(event: WebSocketEvent): void {
   }
 }
 
-function handleRequest(request: Request): void {
+function handleRequest(request: Request): none {
   if !request.isWebSocketUpgrade() {
     return
   }

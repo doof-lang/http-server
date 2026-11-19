@@ -383,7 +383,7 @@ function handleWebSocketEventAny(
     textSuccess: Success -> {
       state.textCount += 1
       state.text = textSuccess.value.text
-      textSuccess.value.connection.sendText("echo:" + textSuccess.value.text)!
+      textSuccess.value.connection.sendText("echo:${textSuccess.value.text}")!
       return
     }
     _: Failure -> {}

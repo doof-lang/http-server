@@ -43,22 +43,12 @@ export function headersAreSafe(headers: readonly HttpHeader[]): bool {
 
 export function hasHeader(headers: readonly HttpHeader[], name: string): bool {
   lowerName := name.toLowerCase()
-  for header of headers {
-    if header.name.toLowerCase() == lowerName {
-      return true
-    }
-  }
-  return false
+  return headers.some(=> it.name.toLowerCase() == lowerName)
 }
 
 export function headerValue(headers: readonly HttpHeader[], name: string): string | none {
   lowerName := name.toLowerCase()
-  for header of headers {
-    if header.name.toLowerCase() == lowerName {
-      return header.value
-    }
-  }
-  return none
+  return headers.find(=> it.name.toLowerCase() == lowerName)?.value
 }
 
 export function headerContainsTokenValue(value: string, token: string): bool {
@@ -108,7 +98,7 @@ export function withVaryAcceptEncoding(headers: readonly HttpHeader[]): readonly
     if header.name.toLowerCase() == "vary" {
       merged.push(HttpHeader {
         name: header.name,
-        value: header.value + ", Accept-Encoding",
+        value: "${header.value}, Accept-Encoding",
       })
     } else {
       merged.push(header)
